@@ -342,7 +342,7 @@ func (n *node[K, V]) setCollisionMutable(e entry[K, V], shift uint, h Hasher[K])
 
 func (n *node[K, V]) delete(key K, hash uint64, shift uint, h Hasher[K]) (*node[K, V], bool) {
 	if n.collision {
-		return n.deleteCollision(key, hash, shift, h)
+		return n.deleteCollision(key, hash, h)
 	}
 
 	bit := bitpos(fragment(hash, shift))
@@ -375,17 +375,12 @@ func (n *node[K, V]) delete(key K, hash uint64, shift uint, h Hasher[K]) (*node[
 		}
 		return n.cloneWithChild(idx, child), true
 	}
-
-	clone := n.cloneWithoutChildSharedEntries(bit, idx)
-	if clone.isEmpty() {
-		return nil, true
-	}
-	return clone, true
+	panic("hamt: delete produced empty child")
 }
 
 func (n *node[K, V]) deleteMutable(key K, hash uint64, shift uint, h Hasher[K]) (*node[K, V], bool) {
 	if n.collision {
-		return n.deleteCollisionMutable(key, hash, shift, h)
+		return n.deleteCollisionMutable(key, hash, h)
 	}
 
 	bit := bitpos(fragment(hash, shift))
@@ -425,16 +420,10 @@ func (n *node[K, V]) deleteMutable(key K, hash uint64, shift uint, h Hasher[K]) 
 		n.children[idx] = child
 		return n, true
 	}
-
-	n.nodeMap &^= bit
-	n.children = removeChildMutable(n.children, idx)
-	if n.isEmpty() {
-		return nil, true
-	}
-	return n, true
+	panic("hamt: delete produced empty child")
 }
 
-func (n *node[K, V]) deleteCollision(key K, hash uint64, shift uint, h Hasher[K]) (*node[K, V], bool) {
+func (n *node[K, V]) deleteCollision(key K, hash uint64, h Hasher[K]) (*node[K, V], bool) {
 	if hash != n.collisionHash {
 		return n, false
 	}
@@ -450,7 +439,7 @@ func (n *node[K, V]) deleteCollision(key K, hash uint64, shift uint, h Hasher[K]
 	return n, false
 }
 
-func (n *node[K, V]) deleteCollisionMutable(key K, hash uint64, shift uint, h Hasher[K]) (*node[K, V], bool) {
+func (n *node[K, V]) deleteCollisionMutable(key K, hash uint64, h Hasher[K]) (*node[K, V], bool) {
 	if hash != n.collisionHash {
 		return n, false
 	}
@@ -513,20 +502,6 @@ func (n *node[K, V]) singleton() (entry[K, V], bool) {
 	return zero, false
 }
 
-func (n *node[K, V]) clone() *node[K, V] {
-	clone := *n
-	if n.entries != nil {
-		clone.entries = append([]entry[K, V](nil), n.entries...)
-	}
-	if n.children != nil {
-		clone.children = append([]*node[K, V](nil), n.children...)
-	}
-	if n.collisions != nil {
-		clone.collisions = append([]collisionEntry[K, V](nil), n.collisions...)
-	}
-	return &clone
-}
-
 func (n *node[K, V]) cloneCollisionWithEntry(idx int, e entry[K, V]) *node[K, V] {
 	clone := *n
 	clone.collisions = append([]collisionEntry[K, V](nil), n.collisions...)
@@ -573,13 +548,6 @@ func (n *node[K, V]) cloneWithoutEntrySharedChildren(bit uint32, idx int) *node[
 	clone := *n
 	clone.dataMap &^= bit
 	clone.entries = removeEntry(n.entries, idx)
-	return &clone
-}
-
-func (n *node[K, V]) cloneWithoutChildSharedEntries(bit uint32, idx int) *node[K, V] {
-	clone := *n
-	clone.nodeMap &^= bit
-	clone.children = removeChild(n.children, idx)
 	return &clone
 }
 

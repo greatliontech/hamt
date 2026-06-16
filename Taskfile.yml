@@ -16,6 +16,26 @@ tasks:
     cmds:
       - go test -race ./...
 
+  test:cover:
+    desc: Run tests with statement coverage
+    cmds:
+      - go test -cover ./...
+
+  cover:func:
+    desc: Show function coverage; override COVER_PROFILE
+    cmds:
+      - mkdir -p "$(dirname "${COVER_PROFILE:-/tmp/opencode/hamt-coverage.out}")"
+      - go test -coverprofile="${COVER_PROFILE:-/tmp/opencode/hamt-coverage.out}" ./...
+      - go tool cover -func="${COVER_PROFILE:-/tmp/opencode/hamt-coverage.out}"
+
+  cover:html:
+    desc: Write HTML coverage report; override COVER_PROFILE and COVER_HTML
+    cmds:
+      - mkdir -p "$(dirname "${COVER_PROFILE:-/tmp/opencode/hamt-coverage.out}")"
+      - mkdir -p "$(dirname "${COVER_HTML:-/tmp/opencode/hamt-coverage.html}")"
+      - go test -coverprofile="${COVER_PROFILE:-/tmp/opencode/hamt-coverage.out}" ./...
+      - go tool cover -html="${COVER_PROFILE:-/tmp/opencode/hamt-coverage.out}" -o "${COVER_HTML:-/tmp/opencode/hamt-coverage.html}"
+
   check:
     desc: Run standard verification
     cmds:

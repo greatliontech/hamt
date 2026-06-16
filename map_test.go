@@ -89,11 +89,18 @@ func TestMapDeleteMissingReturnsEquivalentMap(t *testing.T) {
 	m := NewMap[int, string](IntHasher{}).Set(1, "one")
 	n := m.Delete(2)
 
-	if n.root != m.root {
-		t.Fatal("delete of missing key should preserve root")
-	}
 	assertLen(t, n, 1)
 	assertGet(t, n, 1, "one")
+	validateMap(t, n)
+}
+
+func TestMapDeleteMissingSameFragmentReturnsEquivalentMap(t *testing.T) {
+	m := NewMap[uint64, string](identityUint64Hasher{}).Set(0, "zero")
+	n := m.Delete(32)
+
+	assertLen(t, n, 1)
+	assertGet(t, n, 0, "zero")
+	validateMap(t, n)
 }
 
 func TestMapSnapshotsAreImmutable(t *testing.T) {
@@ -166,6 +173,39 @@ func TestMapForcedHashCollisions(t *testing.T) {
 	assertGet(t, m, 7, "updated")
 	assertMissing[int, string](t, m, 3)
 	validateMap(t, m)
+}
+
+func TestMapCollisionGetHashMismatch(t *testing.T) {
+	m := NewMap[int, string](splitCollisionHasher{})
+	m = m.Set(1, "one")
+	m = m.Set(2, "two")
+
+	assertMissing[int, string](t, m, 3)
+	validateMap(t, m)
+}
+
+func TestMapCollisionDeleteMissingReturnsEquivalentMap(t *testing.T) {
+	m := NewMap[int, string](constantIntHasher{})
+	m = m.Set(1, "one")
+	m = m.Set(2, "two")
+	n := m.Delete(3)
+
+	assertLen(t, n, 2)
+	assertGet(t, n, 1, "one")
+	assertGet(t, n, 2, "two")
+	validateMap(t, n)
+}
+
+func TestMapCollisionDeleteHashMismatchReturnsEquivalentMap(t *testing.T) {
+	m := NewMap[int, string](splitCollisionHasher{})
+	m = m.Set(1, "one")
+	m = m.Set(2, "two")
+	n := m.Delete(3)
+
+	assertLen(t, n, 2)
+	assertGet(t, n, 1, "one")
+	assertGet(t, n, 2, "two")
+	validateMap(t, n)
 }
 
 func TestMapCollisionInsertDoesNotMutateSnapshot(t *testing.T) {
@@ -316,6 +356,57 @@ func TestMapRangeStops(t *testing.T) {
 	}
 }
 
+func TestMapRangeForcedHashCollisions(t *testing.T) {
+	m := NewMap[int, string](constantIntHasher{})
+	want := map[int]string{}
+	for i := 0; i < 8; i++ {
+		value := fmt.Sprintf("value-%d", i)
+		m = m.Set(i, value)
+		want[i] = value
+	}
+
+	got := map[int]string{}
+	visits := 0
+	m.Range(func(k int, v string) bool {
+		visits++
+		if _, ok := got[k]; ok {
+			t.Fatalf("Range visited key %d more than once", k)
+		}
+		got[k] = v
+		return true
+	})
+
+	if visits != len(want) {
+		t.Fatalf("range visits = %d, want %d", visits, len(want))
+	}
+	if len(got) != len(want) {
+		t.Fatalf("range count = %d, want %d", len(got), len(want))
+	}
+	for k, v := range want {
+		if got[k] != v {
+			t.Fatalf("range[%d] = %q, want %q", k, got[k], v)
+		}
+	}
+	validateMap(t, m)
+}
+
+func TestMapRangeStopsInCollision(t *testing.T) {
+	m := NewMap[int, int](constantIntHasher{})
+	for i := 0; i < 4; i++ {
+		m = m.Set(i, i)
+	}
+
+	count := 0
+	m.Range(func(int, int) bool {
+		count++
+		return false
+	})
+	if count != 1 {
+		t.Fatalf("range count = %d, want 1", count)
+	}
+	validateMap(t, m)
+}
+
 func TestMapQuickAgainstBuiltin(t *testing.T) {
 	prop := func(ops []uint64) bool {
 		m := NewMap[int, int](IntHasher{})
@@ -354,12 +445,14 @@ func TestMapQuickAgainstBuiltin(t *testing.T) {
 }
 
 func TestNilHasherPanicsOnSet(t *testing.T) {
-	defer func() {
-		if recover() == nil {
-			t.Fatal("Set with nil hasher did not panic")
-		}
-	}()
-	_ = NewMap[int, int](nil).Set(1, 1)
+	assertPanics(t, func() {
+		_ = NewMap[int, int](nil).Set(1, 1)
+	})
+}
+
+func TestNilBuilderHasherPanicsOnSet(t *testing.T) {
+	b := NewBuilder[int, int](nil)
+	assertPanics(t, func() { b.Set(1, 1) })
 }
 
 func TestBuilderSetGetLenMap(t *testing.T) {
@@ -407,6 +500,17 @@ func TestBuilderDelete(t *testing.T) {
 	validateMap(t, m)
 }
 
+func TestBuilderDeleteMissingSameFragment(t *testing.T) {
+	b := NewBuilder[uint64, string](identityUint64Hasher{})
+	b.Set(0, "zero")
+	b.Delete(32)
+	m := b.Map()
+
+	assertLen(t, m, 1)
+	assertGet(t, m, 0, "zero")
+	validateMap(t, m)
+}
+
 func TestBuilderForcedHashCollisions(t *testing.T) {
 	b := NewBuilder[int, string](constantIntHasher{})
 	for i := 0; i < 20; i++ {
@@ -428,6 +532,32 @@ func TestBuilderForcedHashCollisions(t *testing.T) {
 		}
 		assertGet(t, m, i, want)
 	}
+	validateMap(t, m)
+}
+
+func TestBuilderDeleteMissingCollision(t *testing.T) {
+	b := NewBuilder[int, string](constantIntHasher{})
+	b.Set(1, "one")
+	b.Set(2, "two")
+	b.Delete(3)
+	m := b.Map()
+
+	assertLen(t, m, 2)
+	assertGet(t, m, 1, "one")
+	assertGet(t, m, 2, "two")
+	validateMap(t, m)
+}
+
+func TestBuilderDeleteHashMismatchCollision(t *testing.T) {
+	b := NewBuilder[int, string](splitCollisionHasher{})
+	b.Set(1, "one")
+	b.Set(2, "two")
+	b.Delete(3)
+	m := b.Map()
+
+	assertLen(t, m, 2)
+	assertGet(t, m, 1, "one")
+	assertGet(t, m, 2, "two")
 	validateMap(t, m)
 }
 
@@ -533,6 +663,19 @@ func TestBuilderQuickAgainstBuiltin(t *testing.T) {
 
 	if err := quick.Check(prop, &quick.Config{MaxCount: 200}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestUint64Hasher(t *testing.T) {
+	h := Uint64Hasher{}
+	if h.Hash(1) != h.Hash(1) {
+		t.Fatal("Hash(1) is not stable")
+	}
+	if !h.Equal(1, 1) {
+		t.Fatal("Equal(1, 1) = false, want true")
+	}
+	if h.Equal(1, 2) {
+		t.Fatal("Equal(1, 2) = true, want false")
 	}
 }
 

@@ -29,6 +29,9 @@ This repository uses [Task](https://taskfile.dev/) for common command sets:
 
 - `task test`: run unit tests.
 - `task test:race`: run tests with race detection.
+- `task test:cover`: run tests with statement coverage.
+- `task cover:func`: show function coverage. Override with `COVER_PROFILE=/path/to/coverage.out task cover:func`.
+- `task cover:html`: write an HTML coverage report. Override with `COVER_PROFILE=/path/to/coverage.out COVER_HTML=/path/to/coverage.html task cover:html`.
 - `task check`: run standard verification.
 - `task bench:quick`: run a one-iteration benchmark smoke test.
 - `task bench`: run the benchmark matrix. Override with `BENCH_TIME=5s BENCH_COUNT=10 task bench`.
