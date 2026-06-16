@@ -186,20 +186,34 @@ type collisionEntry[K, V any] struct {
 	value V
 }
 
+type nodeKind uint8
+
+const (
+	nodeKindBranch nodeKind = iota
+	nodeKindCollision
+)
+
 type node[K, V any] struct {
+	branchNode[K, V]
+	kind nodeKind
+	collisionNode[K, V]
+}
+
+type branchNode[K, V any] struct {
 	dataMap  uint32
 	nodeMap  uint32
 	entries  []entry[K, V]
 	children []*node[K, V]
+}
 
-	collision     bool
+type collisionNode[K, V any] struct {
 	collisionHash uint64
 	collisions    []collisionEntry[K, V]
 }
 
 func newSingleNode[K, V any](e entry[K, V], shift uint) *node[K, V] {
 	bit := bitpos(fragment(e.hash, shift))
-	return &node[K, V]{dataMap: bit, entries: []entry[K, V]{e}}
+	return &node[K, V]{branchNode: branchNode[K, V]{dataMap: bit, entries: []entry[K, V]{e}}, kind: nodeKindBranch}
 }
 
 func newCollisionNode[K, V any](hash uint64, entries []entry[K, V]) *node[K, V] {
@@ -207,12 +221,16 @@ func newCollisionNode[K, V any](hash uint64, entries []entry[K, V]) *node[K, V] 
 	for i, e := range entries {
 		collisions[i] = collisionEntry[K, V]{key: e.key, value: e.value}
 	}
-	return &node[K, V]{collision: true, collisionHash: hash, collisions: collisions}
+	return &node[K, V]{kind: nodeKindCollision, collisionNode: collisionNode[K, V]{collisionHash: hash, collisions: collisions}}
+}
+
+func (n *node[K, V]) isCollision() bool {
+	return n.kind == nodeKindCollision
 }
 
 func (n *node[K, V]) get(key K, hash uint64, shift uint, h Hasher[K]) (V, bool) {
 	var zero V
-	if n.collision {
+	if n.isCollision() {
 		if hash != n.collisionHash {
 			return zero, false
 		}
@@ -239,7 +257,7 @@ func (n *node[K, V]) get(key K, hash uint64, shift uint, h Hasher[K]) (V, bool) 
 }
 
 func (n *node[K, V]) set(e entry[K, V], shift uint, h Hasher[K]) (*node[K, V], bool) {
-	if n.collision {
+	if n.isCollision() {
 		return n.setCollision(e, shift, h)
 	}
 
@@ -265,7 +283,7 @@ func (n *node[K, V]) set(e entry[K, V], shift uint, h Hasher[K]) (*node[K, V], b
 }
 
 func (n *node[K, V]) setMutable(e entry[K, V], shift uint, h Hasher[K]) (*node[K, V], bool) {
-	if n.collision {
+	if n.isCollision() {
 		return n.setCollisionMutable(e, shift, h)
 	}
 
@@ -341,7 +359,7 @@ func (n *node[K, V]) setCollisionMutable(e entry[K, V], shift uint, h Hasher[K])
 }
 
 func (n *node[K, V]) delete(key K, hash uint64, shift uint, h Hasher[K]) (*node[K, V], bool) {
-	if n.collision {
+	if n.isCollision() {
 		return n.deleteCollision(key, hash, h)
 	}
 
@@ -379,7 +397,7 @@ func (n *node[K, V]) delete(key K, hash uint64, shift uint, h Hasher[K]) (*node[
 }
 
 func (n *node[K, V]) deleteMutable(key K, hash uint64, shift uint, h Hasher[K]) (*node[K, V], bool) {
-	if n.collision {
+	if n.isCollision() {
 		return n.deleteCollisionMutable(key, hash, h)
 	}
 
@@ -457,7 +475,7 @@ func (n *node[K, V]) deleteCollisionMutable(key K, hash uint64, h Hasher[K]) (*n
 }
 
 func (n *node[K, V]) each(fn func(K, V) bool) bool {
-	if n.collision {
+	if n.isCollision() {
 		for _, e := range n.collisions {
 			if !fn(e.key, e.value) {
 				return false
@@ -489,7 +507,7 @@ func (n *node[K, V]) each(fn func(K, V) bool) bool {
 
 func (n *node[K, V]) singleton() (entry[K, V], bool) {
 	var zero entry[K, V]
-	if n.collision {
+	if n.isCollision() {
 		if len(n.collisions) == 1 {
 			e := n.collisions[0]
 			return entry[K, V]{key: e.key, value: e.value, hash: n.collisionHash}, true
@@ -568,7 +586,7 @@ func (n *node[K, V]) cloneWithChildReplacedByEntry(bit uint32, childIdx int, e e
 }
 
 func (n *node[K, V]) isEmpty() bool {
-	return !n.collision && n.dataMap == 0 && n.nodeMap == 0
+	return !n.isCollision() && n.dataMap == 0 && n.nodeMap == 0
 }
 
 func mergeEntries[K, V any](a, b entry[K, V], shift uint) *node[K, V] {
@@ -579,7 +597,7 @@ func mergeEntries[K, V any](a, b entry[K, V], shift uint) *node[K, V] {
 	aBit := bitpos(fragment(a.hash, shift))
 	bBit := bitpos(fragment(b.hash, shift))
 	if aBit != bBit {
-		n := &node[K, V]{dataMap: aBit | bBit}
+		n := &node[K, V]{branchNode: branchNode[K, V]{dataMap: aBit | bBit}, kind: nodeKindBranch}
 		if aBit < bBit {
 			n.entries = []entry[K, V]{a, b}
 		} else {
@@ -589,7 +607,7 @@ func mergeEntries[K, V any](a, b entry[K, V], shift uint) *node[K, V] {
 	}
 
 	child := mergeEntries(a, b, shift+fragmentBits)
-	return &node[K, V]{nodeMap: aBit, children: []*node[K, V]{child}}
+	return &node[K, V]{branchNode: branchNode[K, V]{nodeMap: aBit, children: []*node[K, V]{child}}, kind: nodeKindBranch}
 }
 
 func insertKnown[K, V any](root *node[K, V], e entry[K, V], shift uint, h Hasher[K]) *node[K, V] {

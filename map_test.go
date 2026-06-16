@@ -307,7 +307,7 @@ func TestMapDeleteCanonicalizesSingletonCollision(t *testing.T) {
 
 	assertLen(t, m, 1)
 	assertGet(t, m, 1, "one")
-	if m.root == nil || m.root.collision {
+	if m.root == nil || m.root.isCollision() {
 		t.Fatal("delete should collapse a two-entry collision node to a direct entry")
 	}
 	if _, ok := m.root.singleton(); !ok {
@@ -584,7 +584,7 @@ func TestBuilderDeleteCanonicalizesSingletonCollision(t *testing.T) {
 	m := b.Map()
 	assertLen(t, m, 1)
 	assertGet(t, m, 1, "one")
-	if m.root == nil || m.root.collision {
+	if m.root == nil || m.root.isCollision() {
 		t.Fatal("builder delete should collapse a two-entry collision node to a direct entry")
 	}
 	if _, ok := m.root.singleton(); !ok {
@@ -775,7 +775,7 @@ func checkNode[K comparable, V comparable](n *node[K, V], shift uint, h Hasher[K
 	if n == nil {
 		return 0, fmt.Errorf("nil child")
 	}
-	if n.collision {
+	if n.isCollision() {
 		if len(n.collisions) < 2 {
 			return 0, fmt.Errorf("collision len = %d, want >= 2", len(n.collisions))
 		}
