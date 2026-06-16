@@ -212,7 +212,7 @@ func (n *node[K, V]) delete(key K, hash uint64, shift uint, h Hasher[K]) (*node[
 		if e.hash != hash || !h.Equal(e.key, key) {
 			return n, false
 		}
-		clone := n.cloneWithoutEntry(bit, idx)
+		clone := n.cloneWithoutEntrySharedChildren(bit, idx)
 		if clone.isEmpty() {
 			return nil, true
 		}
@@ -229,19 +229,14 @@ func (n *node[K, V]) delete(key K, hash uint64, shift uint, h Hasher[K]) (*node[
 		return n, false
 	}
 
-	clone := n.cloneWithoutChild(bit, idx)
 	if child != nil {
 		if e, ok := child.singleton(); ok {
-			entryIdx := index(clone.dataMap, bit)
-			clone.dataMap |= bit
-			clone.entries = insertEntry(clone.entries, entryIdx, e)
-		} else {
-			childIdx := index(clone.nodeMap, bit)
-			clone.nodeMap |= bit
-			clone.children = insertChild(clone.children, childIdx, child)
+			return n.cloneWithChildReplacedByEntry(bit, idx, e), true
 		}
+		return n.cloneWithChild(idx, child), true
 	}
 
+	clone := n.cloneWithoutChildSharedEntries(bit, idx)
 	if clone.isEmpty() {
 		return nil, true
 	}
@@ -333,11 +328,33 @@ func (n *node[K, V]) cloneWithoutEntry(bit uint32, idx int) *node[K, V] {
 	return &clone
 }
 
-func (n *node[K, V]) cloneWithoutChild(bit uint32, idx int) *node[K, V] {
+func (n *node[K, V]) cloneWithoutEntrySharedChildren(bit uint32, idx int) *node[K, V] {
+	clone := *n
+	clone.dataMap &^= bit
+	clone.entries = removeEntry(n.entries, idx)
+	return &clone
+}
+
+func (n *node[K, V]) cloneWithoutChildSharedEntries(bit uint32, idx int) *node[K, V] {
 	clone := *n
 	clone.nodeMap &^= bit
-	clone.entries = append([]entry[K, V](nil), n.entries...)
 	clone.children = removeChild(n.children, idx)
+	return &clone
+}
+
+func (n *node[K, V]) cloneWithChild(idx int, child *node[K, V]) *node[K, V] {
+	clone := *n
+	clone.children = append([]*node[K, V](nil), n.children...)
+	clone.children[idx] = child
+	return &clone
+}
+
+func (n *node[K, V]) cloneWithChildReplacedByEntry(bit uint32, childIdx int, e entry[K, V]) *node[K, V] {
+	clone := *n
+	clone.nodeMap &^= bit
+	clone.children = removeChild(n.children, childIdx)
+	clone.dataMap |= bit
+	clone.entries = insertEntryCopy(n.entries, index(n.dataMap, bit), e)
 	return &clone
 }
 
@@ -394,6 +411,14 @@ func insertEntry[K, V any](entries []entry[K, V], idx int, e entry[K, V]) []entr
 	copy(entries[idx+1:], entries[idx:])
 	entries[idx] = e
 	return entries
+}
+
+func insertEntryCopy[K, V any](entries []entry[K, V], idx int, e entry[K, V]) []entry[K, V] {
+	out := make([]entry[K, V], len(entries)+1)
+	copy(out, entries[:idx])
+	out[idx] = e
+	copy(out[idx+1:], entries[idx:])
+	return out
 }
 
 func removeEntry[K, V any](entries []entry[K, V], idx int) []entry[K, V] {

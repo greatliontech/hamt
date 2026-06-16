@@ -80,6 +80,24 @@ func TestMapSnapshotsAreImmutable(t *testing.T) {
 	validateMap(t, m3)
 }
 
+func TestMapDeleteFromBranchDoesNotMutateSnapshot(t *testing.T) {
+	m := NewMap[uint64, string](identityUint64Hasher{})
+	m = m.Set(0, "zero")
+	m = m.Set(32, "thirty-two")
+	m = m.Set(64, "sixty-four")
+
+	n := m.Delete(64)
+
+	assertGet(t, m, 0, "zero")
+	assertGet(t, m, 32, "thirty-two")
+	assertGet(t, m, 64, "sixty-four")
+	assertGet(t, n, 0, "zero")
+	assertGet(t, n, 32, "thirty-two")
+	assertMissing[uint64, string](t, n, 64)
+	validateMap(t, m)
+	validateMap(t, n)
+}
+
 func TestMapForcedHashCollisions(t *testing.T) {
 	m := NewMap[int, string](constantIntHasher{})
 	for i := 0; i < 20; i++ {
@@ -349,3 +367,8 @@ type constantIntHasher struct{}
 
 func (constantIntHasher) Hash(int) uint64     { return 1 }
 func (constantIntHasher) Equal(a, b int) bool { return a == b }
+
+type identityUint64Hasher struct{}
+
+func (identityUint64Hasher) Hash(v uint64) uint64   { return v }
+func (identityUint64Hasher) Equal(a, b uint64) bool { return a == b }
