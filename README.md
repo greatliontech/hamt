@@ -12,4 +12,13 @@ v, ok := m.Get("jane")
 fmt.Println(v, ok) // 100 true
 ```
 
+For bulk construction, use a builder:
+
+```go
+b := hamt.NewBuilder[string, int](hamt.StringHasher{})
+b.Set("jane", 100)
+b.Set("susy", 200)
+m := b.Map()
+```
+
 See `docs/spec.md` for the authoritative behavior contract.

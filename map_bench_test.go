@@ -127,6 +127,24 @@ func BenchmarkMapBuild(b *testing.B) {
 	}
 }
 
+func BenchmarkMapBuilderBuild(b *testing.B) {
+	for _, size := range benchSizes() {
+		keys := benchKeys(size)
+		b.Run(fmt.Sprintf("ours/%d", size), func(b *testing.B) {
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				benchMapSink = buildOursBuilder(keys)
+			}
+		})
+		b.Run(fmt.Sprintf("benbjohnson/%d", size), func(b *testing.B) {
+			b.ReportAllocs()
+			for i := 0; i < b.N; i++ {
+				benchBenSink = buildBenBuilder(keys)
+			}
+		})
+	}
+}
+
 func BenchmarkMapRange(b *testing.B) {
 	for _, size := range benchSizes() {
 		keys := benchKeys(size)
@@ -186,6 +204,22 @@ func buildBen(keys []benchKey) *ben.Map[benchKey, int] {
 		m = m.Set(key, int(key))
 	}
 	return m
+}
+
+func buildOursBuilder(keys []benchKey) Map[benchKey, int] {
+	b := NewBuilder[benchKey, int](benchHasher{})
+	for _, key := range keys {
+		b.Set(key, int(key))
+	}
+	return b.Map()
+}
+
+func buildBenBuilder(keys []benchKey) *ben.Map[benchKey, int] {
+	b := ben.NewMapBuilder[benchKey, int](benBenchHasher{})
+	for _, key := range keys {
+		b.Set(key, int(key))
+	}
+	return b.Map()
 }
 
 type benchKey uint64

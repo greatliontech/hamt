@@ -272,6 +272,166 @@ func TestNilHasherPanicsOnSet(t *testing.T) {
 	_ = NewMap[int, int](nil).Set(1, 1)
 }
 
+func TestBuilderSetGetLenMap(t *testing.T) {
+	b := NewBuilder[int, string](IntHasher{})
+	if b.Len() != 0 {
+		t.Fatalf("empty builder len = %d, want 0", b.Len())
+	}
+
+	b.Set(1, "one")
+	b.Set(2, "two")
+	b.Set(1, "uno")
+
+	if b.Len() != 2 {
+		t.Fatalf("builder len = %d, want 2", b.Len())
+	}
+	assertBuilderGet(t, b, 1, "uno")
+	assertBuilderGet(t, b, 2, "two")
+	assertBuilderMissing[int, string](t, b, 3)
+
+	m := b.Map()
+	assertLen(t, m, 2)
+	assertGet(t, m, 1, "uno")
+	assertGet(t, m, 2, "two")
+	validateMap(t, m)
+}
+
+func TestBuilderDelete(t *testing.T) {
+	b := NewBuilder[int, string](IntHasher{})
+	b.Set(1, "one")
+	b.Set(2, "two")
+	b.Set(3, "three")
+	b.Delete(2)
+	b.Delete(4)
+
+	if b.Len() != 2 {
+		t.Fatalf("builder len = %d, want 2", b.Len())
+	}
+	assertBuilderGet(t, b, 1, "one")
+	assertBuilderMissing[int, string](t, b, 2)
+	assertBuilderGet(t, b, 3, "three")
+
+	m := b.Map()
+	assertLen(t, m, 2)
+	assertMissing[int, string](t, m, 2)
+	validateMap(t, m)
+}
+
+func TestBuilderForcedHashCollisions(t *testing.T) {
+	b := NewBuilder[int, string](constantIntHasher{})
+	for i := 0; i < 20; i++ {
+		b.Set(i, fmt.Sprintf("value-%d", i))
+	}
+	b.Set(7, "updated")
+	b.Delete(3)
+
+	m := b.Map()
+	assertLen(t, m, 19)
+	for i := 0; i < 20; i++ {
+		if i == 3 {
+			assertMissing[int, string](t, m, i)
+			continue
+		}
+		want := fmt.Sprintf("value-%d", i)
+		if i == 7 {
+			want = "updated"
+		}
+		assertGet(t, m, i, want)
+	}
+	validateMap(t, m)
+}
+
+func TestBuilderDeleteCanonicalizesSingletonCollision(t *testing.T) {
+	b := NewBuilder[int, string](constantIntHasher{})
+	b.Set(1, "one")
+	b.Set(2, "two")
+	b.Delete(2)
+
+	m := b.Map()
+	assertLen(t, m, 1)
+	assertGet(t, m, 1, "one")
+	if m.root == nil || m.root.collision {
+		t.Fatal("builder delete should collapse a two-entry collision node to a direct entry")
+	}
+	if _, ok := m.root.singleton(); !ok {
+		t.Fatal("builder delete should leave a singleton root")
+	}
+	validateMap(t, m)
+}
+
+func TestBuilderMapInvalidatesBuilder(t *testing.T) {
+	b := NewBuilder[int, string](IntHasher{})
+	b.Set(1, "one")
+	m := b.Map()
+	assertGet(t, m, 1, "one")
+
+	assertPanics(t, func() { b.Len() })
+	assertPanics(t, func() { b.Get(1) })
+	assertPanics(t, func() { b.Set(2, "two") })
+	assertPanics(t, func() { b.Delete(1) })
+	assertPanics(t, func() { b.Map() })
+}
+
+func TestBuilderMapResultIsImmutable(t *testing.T) {
+	b := NewBuilder[int, string](IntHasher{})
+	b.Set(1, "one")
+	m := b.Map()
+	n := m.Set(1, "uno")
+
+	assertGet(t, m, 1, "one")
+	assertGet(t, n, 1, "uno")
+	validateMap(t, m)
+	validateMap(t, n)
+}
+
+func TestBuilderCopyInvalidatedByMap(t *testing.T) {
+	b := NewBuilder[int, string](IntHasher{})
+	b.Set(1, "one")
+	copied := *b
+
+	m := b.Map()
+
+	assertPanics(t, func() { copied.Delete(1) })
+	assertGet(t, m, 1, "one")
+	validateMap(t, m)
+}
+
+func TestBuilderQuickAgainstBuiltin(t *testing.T) {
+	prop := func(ops []uint64) bool {
+		b := NewBuilder[int, int](IntHasher{})
+		want := map[int]int{}
+
+		for _, op := range ops {
+			key := int((op >> 2) % 97)
+			value := int(op >> 9)
+			switch op & 3 {
+			case 0, 1:
+				b.Set(key, value)
+				want[key] = value
+			case 2:
+				b.Delete(key)
+				delete(want, key)
+			case 3:
+				got, ok := b.Get(key)
+				wantValue, wantOK := want[key]
+				if ok != wantOK || got != wantValue {
+					return false
+				}
+			}
+			if b.Len() != len(want) {
+				return false
+			}
+		}
+
+		m := b.Map()
+		return mapsEqual(m, want) && checkMap(m) == nil
+	}
+
+	if err := quick.Check(prop, &quick.Config{MaxCount: 200}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func assertLen[K, V any](t *testing.T, m Map[K, V], want int) {
 	t.Helper()
 	if m.Len() != want {
@@ -292,6 +452,31 @@ func assertMissing[K comparable, V any](t *testing.T, m Map[K, V], key K) {
 	if got, ok := m.Get(key); ok {
 		t.Fatalf("Get(%v) = %v, true; want missing", key, got)
 	}
+}
+
+func assertBuilderGet[K comparable, V comparable](t *testing.T, b *Builder[K, V], key K, want V) {
+	t.Helper()
+	got, ok := b.Get(key)
+	if !ok || got != want {
+		t.Fatalf("Builder.Get(%v) = %v, %v; want %v, true", key, got, ok, want)
+	}
+}
+
+func assertBuilderMissing[K comparable, V any](t *testing.T, b *Builder[K, V], key K) {
+	t.Helper()
+	if got, ok := b.Get(key); ok {
+		t.Fatalf("Builder.Get(%v) = %v, true; want missing", key, got)
+	}
+}
+
+func assertPanics(t *testing.T, fn func()) {
+	t.Helper()
+	defer func() {
+		if recover() == nil {
+			t.Fatal("expected panic")
+		}
+	}()
+	fn()
 }
 
 func validateMap[K comparable, V comparable](t *testing.T, m Map[K, V]) {
