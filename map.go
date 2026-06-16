@@ -181,6 +181,11 @@ type entry[K, V any] struct {
 	hash  uint64
 }
 
+type collisionEntry[K, V any] struct {
+	key   K
+	value V
+}
+
 type node[K, V any] struct {
 	dataMap  uint32
 	nodeMap  uint32
@@ -189,7 +194,7 @@ type node[K, V any] struct {
 
 	collision     bool
 	collisionHash uint64
-	collisions    []entry[K, V]
+	collisions    []collisionEntry[K, V]
 }
 
 func newSingleNode[K, V any](e entry[K, V], shift uint) *node[K, V] {
@@ -198,8 +203,10 @@ func newSingleNode[K, V any](e entry[K, V], shift uint) *node[K, V] {
 }
 
 func newCollisionNode[K, V any](hash uint64, entries []entry[K, V]) *node[K, V] {
-	collisions := make([]entry[K, V], len(entries))
-	copy(collisions, entries)
+	collisions := make([]collisionEntry[K, V], len(entries))
+	for i, e := range entries {
+		collisions[i] = collisionEntry[K, V]{key: e.key, value: e.value}
+	}
 	return &node[K, V]{collision: true, collisionHash: hash, collisions: collisions}
 }
 
@@ -297,7 +304,7 @@ func (n *node[K, V]) setCollision(e entry[K, V], shift uint, h Hasher[K]) (*node
 	if e.hash != n.collisionHash {
 		var root *node[K, V]
 		for _, existing := range n.collisions {
-			root = insertKnown(root, existing, shift, h)
+			root = insertKnown(root, entry[K, V]{key: existing.key, value: existing.value, hash: n.collisionHash}, shift, h)
 		}
 		root = insertKnown(root, e, shift, h)
 		return root, true
@@ -305,22 +312,18 @@ func (n *node[K, V]) setCollision(e entry[K, V], shift uint, h Hasher[K]) (*node
 
 	for i, old := range n.collisions {
 		if h.Equal(old.key, e.key) {
-			clone := n.clone()
-			clone.collisions[i] = e
-			return clone, false
+			return n.cloneCollisionWithEntry(i, e), false
 		}
 	}
 
-	clone := n.clone()
-	clone.collisions = append(clone.collisions, e)
-	return clone, true
+	return n.cloneCollisionWithInsertedEntry(e), true
 }
 
 func (n *node[K, V]) setCollisionMutable(e entry[K, V], shift uint, h Hasher[K]) (*node[K, V], bool) {
 	if e.hash != n.collisionHash {
 		var root *node[K, V]
 		for _, existing := range n.collisions {
-			root = insertKnownMutable(root, existing, shift, h)
+			root = insertKnownMutable(root, entry[K, V]{key: existing.key, value: existing.value, hash: n.collisionHash}, shift, h)
 		}
 		root = insertKnownMutable(root, e, shift, h)
 		return root, true
@@ -328,12 +331,12 @@ func (n *node[K, V]) setCollisionMutable(e entry[K, V], shift uint, h Hasher[K])
 
 	for i, old := range n.collisions {
 		if h.Equal(old.key, e.key) {
-			n.collisions[i] = e
+			n.collisions[i] = collisionEntry[K, V]{key: e.key, value: e.value}
 			return n, false
 		}
 	}
 
-	n.collisions = append(n.collisions, e)
+	n.collisions = append(n.collisions, collisionEntry[K, V]{key: e.key, value: e.value})
 	return n, true
 }
 
@@ -442,9 +445,7 @@ func (n *node[K, V]) deleteCollision(key K, hash uint64, shift uint, h Hasher[K]
 		if len(n.collisions) == 1 {
 			return nil, true
 		}
-		clone := n.clone()
-		clone.collisions = removeEntry(clone.collisions, i)
-		return clone, true
+		return n.cloneCollisionWithoutEntry(i), true
 	}
 	return n, false
 }
@@ -460,7 +461,7 @@ func (n *node[K, V]) deleteCollisionMutable(key K, hash uint64, shift uint, h Ha
 		if len(n.collisions) == 1 {
 			return nil, true
 		}
-		n.collisions = removeEntryMutable(n.collisions, i)
+		n.collisions = removeCollisionMutable(n.collisions, i)
 		return n, true
 	}
 	return n, false
@@ -501,7 +502,8 @@ func (n *node[K, V]) singleton() (entry[K, V], bool) {
 	var zero entry[K, V]
 	if n.collision {
 		if len(n.collisions) == 1 {
-			return n.collisions[0], true
+			e := n.collisions[0]
+			return entry[K, V]{key: e.key, value: e.value, hash: n.collisionHash}, true
 		}
 		return zero, false
 	}
@@ -520,8 +522,27 @@ func (n *node[K, V]) clone() *node[K, V] {
 		clone.children = append([]*node[K, V](nil), n.children...)
 	}
 	if n.collisions != nil {
-		clone.collisions = append([]entry[K, V](nil), n.collisions...)
+		clone.collisions = append([]collisionEntry[K, V](nil), n.collisions...)
 	}
+	return &clone
+}
+
+func (n *node[K, V]) cloneCollisionWithEntry(idx int, e entry[K, V]) *node[K, V] {
+	clone := *n
+	clone.collisions = append([]collisionEntry[K, V](nil), n.collisions...)
+	clone.collisions[idx] = collisionEntry[K, V]{key: e.key, value: e.value}
+	return &clone
+}
+
+func (n *node[K, V]) cloneCollisionWithInsertedEntry(e entry[K, V]) *node[K, V] {
+	clone := *n
+	clone.collisions = insertCollisionCopy(n.collisions, len(n.collisions), collisionEntry[K, V]{key: e.key, value: e.value})
+	return &clone
+}
+
+func (n *node[K, V]) cloneCollisionWithoutEntry(idx int) *node[K, V] {
+	clone := *n
+	clone.collisions = removeCollision(n.collisions, idx)
 	return &clone
 }
 
@@ -659,6 +680,28 @@ func removeEntry[K, V any](entries []entry[K, V], idx int) []entry[K, V] {
 func removeEntryMutable[K, V any](entries []entry[K, V], idx int) []entry[K, V] {
 	copy(entries[idx:], entries[idx+1:])
 	var zero entry[K, V]
+	entries[len(entries)-1] = zero
+	return entries[:len(entries)-1]
+}
+
+func insertCollisionCopy[K, V any](entries []collisionEntry[K, V], idx int, e collisionEntry[K, V]) []collisionEntry[K, V] {
+	out := make([]collisionEntry[K, V], len(entries)+1)
+	copy(out, entries[:idx])
+	out[idx] = e
+	copy(out[idx+1:], entries[idx:])
+	return out
+}
+
+func removeCollision[K, V any](entries []collisionEntry[K, V], idx int) []collisionEntry[K, V] {
+	out := make([]collisionEntry[K, V], len(entries)-1)
+	copy(out, entries[:idx])
+	copy(out[idx:], entries[idx+1:])
+	return out
+}
+
+func removeCollisionMutable[K, V any](entries []collisionEntry[K, V], idx int) []collisionEntry[K, V] {
+	copy(entries[idx:], entries[idx+1:])
+	var zero collisionEntry[K, V]
 	entries[len(entries)-1] = zero
 	return entries[:len(entries)-1]
 }

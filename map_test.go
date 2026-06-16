@@ -168,6 +168,96 @@ func TestMapForcedHashCollisions(t *testing.T) {
 	validateMap(t, m)
 }
 
+func TestMapCollisionInsertDoesNotMutateSnapshot(t *testing.T) {
+	m := NewMap[int, string](constantIntHasher{})
+	m = m.Set(1, "one")
+	m = m.Set(2, "two")
+
+	n := m.Set(3, "three")
+
+	assertLen(t, m, 2)
+	assertGet(t, m, 1, "one")
+	assertGet(t, m, 2, "two")
+	assertMissing[int, string](t, m, 3)
+	assertLen(t, n, 3)
+	assertGet(t, n, 1, "one")
+	assertGet(t, n, 2, "two")
+	assertGet(t, n, 3, "three")
+	validateMap(t, m)
+	validateMap(t, n)
+}
+
+func TestMapCollisionInsertFromBuilderDoesNotAliasSiblings(t *testing.T) {
+	b := NewBuilder[int, string](constantIntHasher{})
+	b.Set(1, "one")
+	b.Set(2, "two")
+	b.Set(3, "three")
+	m := b.Map()
+
+	n := m.Set(4, "four")
+	p := m.Set(5, "five")
+
+	assertLen(t, m, 3)
+	assertMissing[int, string](t, m, 4)
+	assertMissing[int, string](t, m, 5)
+	assertLen(t, n, 4)
+	assertGet(t, n, 4, "four")
+	assertMissing[int, string](t, n, 5)
+	assertLen(t, p, 4)
+	assertMissing[int, string](t, p, 4)
+	assertGet(t, p, 5, "five")
+	validateMap(t, m)
+	validateMap(t, n)
+	validateMap(t, p)
+}
+
+func TestMapCollisionOverwriteDoesNotMutateSnapshot(t *testing.T) {
+	m := NewMap[int, string](constantIntHasher{})
+	m = m.Set(1, "one")
+	m = m.Set(2, "two")
+	m = m.Set(3, "three")
+
+	n := m.Set(2, "updated")
+
+	assertLen(t, m, 3)
+	assertGet(t, m, 2, "two")
+	assertLen(t, n, 3)
+	assertGet(t, n, 2, "updated")
+	validateMap(t, m)
+	validateMap(t, n)
+}
+
+func TestMapCollisionDeleteDoesNotMutateSnapshot(t *testing.T) {
+	m := NewMap[int, string](constantIntHasher{})
+	m = m.Set(1, "one")
+	m = m.Set(2, "two")
+	m = m.Set(3, "three")
+
+	n := m.Delete(2)
+
+	assertLen(t, m, 3)
+	assertGet(t, m, 2, "two")
+	assertLen(t, n, 2)
+	assertMissing[int, string](t, n, 2)
+	assertGet(t, n, 1, "one")
+	assertGet(t, n, 3, "three")
+	validateMap(t, m)
+	validateMap(t, n)
+}
+
+func TestMapCollisionExpansionPreservesExistingHashes(t *testing.T) {
+	m := NewMap[int, string](splitCollisionHasher{})
+	m = m.Set(1, "one")
+	m = m.Set(2, "two")
+	m = m.Set(3, "three")
+
+	assertLen(t, m, 3)
+	assertGet(t, m, 1, "one")
+	assertGet(t, m, 2, "two")
+	assertGet(t, m, 3, "three")
+	validateMap(t, m)
+}
+
 func TestMapDeleteCanonicalizesSingletonCollision(t *testing.T) {
 	m := NewMap[int, string](constantIntHasher{})
 	m = m.Set(1, "one")
@@ -338,6 +428,20 @@ func TestBuilderForcedHashCollisions(t *testing.T) {
 		}
 		assertGet(t, m, i, want)
 	}
+	validateMap(t, m)
+}
+
+func TestBuilderCollisionExpansionPreservesExistingHashes(t *testing.T) {
+	b := NewBuilder[int, string](splitCollisionHasher{})
+	b.Set(1, "one")
+	b.Set(2, "two")
+	b.Set(3, "three")
+	m := b.Map()
+
+	assertLen(t, m, 3)
+	assertGet(t, m, 1, "one")
+	assertGet(t, m, 2, "two")
+	assertGet(t, m, 3, "three")
 	validateMap(t, m)
 }
 
@@ -534,10 +638,7 @@ func checkNode[K comparable, V comparable](n *node[K, V], shift uint, h Hasher[K
 		}
 		seen := map[K]struct{}{}
 		for _, e := range n.collisions {
-			if e.hash != n.collisionHash {
-				return 0, fmt.Errorf("collision hash = %d, want %d", e.hash, n.collisionHash)
-			}
-			if h.Hash(e.key) != e.hash {
+			if h.Hash(e.key) != n.collisionHash {
 				return 0, fmt.Errorf("stored hash mismatch")
 			}
 			if _, ok := seen[e.key]; ok {
@@ -602,6 +703,21 @@ type constantIntHasher struct{}
 
 func (constantIntHasher) Hash(int) uint64     { return 1 }
 func (constantIntHasher) Equal(a, b int) bool { return a == b }
+
+type splitCollisionHasher struct{}
+
+func (splitCollisionHasher) Hash(v int) uint64 {
+	switch v {
+	case 1, 2:
+		return 0
+	case 3:
+		return 1 << fragmentBits
+	default:
+		return uint64(v) << fragmentBits
+	}
+}
+
+func (splitCollisionHasher) Equal(a, b int) bool { return a == b }
 
 type identityUint64Hasher struct{}
 
