@@ -22,3 +22,17 @@ m := b.Map()
 ```
 
 See `docs/spec.md` for the authoritative behavior contract.
+
+## Development
+
+This repository uses [Task](https://taskfile.dev/) for common command sets:
+
+- `task test`: run unit tests.
+- `task test:race`: run tests with race detection.
+- `task check`: run standard verification.
+- `task bench:quick`: run a one-iteration benchmark smoke test.
+- `task bench`: run the benchmark matrix. Override with `BENCH_TIME=5s BENCH_COUNT=10 task bench`.
+- `task bench:builder`: run builder benchmarks only.
+- `task bench:profile`: write CPU and allocation profiles under `/tmp/opencode/hamt-profiles` by default.
+- `task pprof:cpu`: show the CPU profile top output.
+- `task pprof:mem`: show the allocation profile top output.

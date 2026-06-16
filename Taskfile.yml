@@ -1,0 +1,54 @@
+version: '3'
+
+tasks:
+  default:
+    desc: List available tasks
+    cmds:
+      - task --list
+
+  test:
+    desc: Run unit tests
+    cmds:
+      - go test ./...
+
+  test:race:
+    desc: Run tests with race detection
+    cmds:
+      - go test -race ./...
+
+  check:
+    desc: Run standard verification
+    cmds:
+      - task test
+      - task test:race
+
+  bench:quick:
+    desc: Run one-iteration benchmark smoke test
+    cmds:
+      - go test -run=^$ -bench=BenchmarkMap -benchmem -benchtime=1x ./...
+
+  bench:
+    desc: Run benchmark matrix; override BENCH_TIME and BENCH_COUNT
+    cmds:
+      - go test -run=^$ -bench=BenchmarkMap -benchmem -benchtime="${BENCH_TIME:-1s}" -count="${BENCH_COUNT:-10}" ./...
+
+  bench:builder:
+    desc: Run builder benchmarks; override BENCH_TIME and BENCH_COUNT
+    cmds:
+      - go test -run=^$ -bench=BenchmarkMapBuilderBuild -benchmem -benchtime="${BENCH_TIME:-1s}" -count="${BENCH_COUNT:-10}" ./...
+
+  bench:profile:
+    desc: Profile one benchmark; override BENCH, BENCH_TIME, PROFILE_DIR
+    cmds:
+      - mkdir -p "${PROFILE_DIR:-/tmp/opencode/hamt-profiles}"
+      - go test -run=^$ -bench="${BENCH:-BenchmarkMapBuilderBuild/ours/1024$}" -benchmem -benchtime="${BENCH_TIME:-5s}" -cpuprofile="${PROFILE_DIR:-/tmp/opencode/hamt-profiles}/cpu.out" -memprofile="${PROFILE_DIR:-/tmp/opencode/hamt-profiles}/mem.out" ./...
+
+  pprof:cpu:
+    desc: Show CPU profile top; override PROFILE_DIR
+    cmds:
+      - go tool pprof -top "${PROFILE_DIR:-/tmp/opencode/hamt-profiles}/cpu.out"
+
+  pprof:mem:
+    desc: Show allocation profile top; override PROFILE_DIR
+    cmds:
+      - go tool pprof -top -sample_index=alloc_space "${PROFILE_DIR:-/tmp/opencode/hamt-profiles}/mem.out"
