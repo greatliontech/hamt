@@ -43,4 +43,3 @@ Deletes must remove empty branches. When a delete leaves an intermediate branch 
 Benchmark comparisons target:
 
 - `github.com/benbjohnson/immutable` for a generic immutable map with an external hasher.
-- `github.com/raviqqe/hamt/v2` for an immutable HAMT with CHAMP-style delete canonicalization.
