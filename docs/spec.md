@@ -44,9 +44,3 @@ Iteration order is deterministic for a fixed map, hash function, and insertion h
 ## Structural Canonicalization
 
 Deletes must remove empty branches. When a delete leaves an intermediate branch containing only a single direct entry, that branch is collapsed so future operations do not retain avoidable singleton path nodes.
-
-## Benchmark Baselines
-
-Benchmark comparisons target:
-
-- `github.com/benbjohnson/immutable` for a generic immutable map with an external hasher.

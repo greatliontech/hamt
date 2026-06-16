@@ -41,7 +41,7 @@ tasks:
     desc: Profile one benchmark; override BENCH, BENCH_TIME, PROFILE_DIR
     cmds:
       - mkdir -p "${PROFILE_DIR:-/tmp/opencode/hamt-profiles}"
-      - go test -run=^$ -bench="${BENCH:-BenchmarkMapBuilderBuild/ours/1024$}" -benchmem -benchtime="${BENCH_TIME:-5s}" -cpuprofile="${PROFILE_DIR:-/tmp/opencode/hamt-profiles}/cpu.out" -memprofile="${PROFILE_DIR:-/tmp/opencode/hamt-profiles}/mem.out" ./...
+      - go test -run=^$ -bench="${BENCH:-BenchmarkMapBuilderBuild/1024$}" -benchmem -benchtime="${BENCH_TIME:-5s}" -cpuprofile="${PROFILE_DIR:-/tmp/opencode/hamt-profiles}/cpu.out" -memprofile="${PROFILE_DIR:-/tmp/opencode/hamt-profiles}/mem.out" ./...
 
   pprof:cpu:
     desc: Show CPU profile top; override PROFILE_DIR
