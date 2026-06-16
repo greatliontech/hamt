@@ -149,32 +149,20 @@ func (n *node[K, V]) set(e entry[K, V], shift uint, h Hasher[K]) (*node[K, V], b
 		idx := index(n.dataMap, bit)
 		old := n.entries[idx]
 		if old.hash == e.hash && h.Equal(old.key, e.key) {
-			clone := n.clone()
-			clone.entries[idx] = e
-			return clone, false
+			return n.cloneWithEntry(idx, e), false
 		}
 
 		child := mergeEntries(old, e, shift+fragmentBits)
-		clone := n.cloneWithoutEntry(bit, idx)
-		childIdx := index(clone.nodeMap, bit)
-		clone.nodeMap |= bit
-		clone.children = insertChild(clone.children, childIdx, child)
-		return clone, true
+		return n.cloneWithEntryReplacedByChild(bit, idx, child), true
 	}
 
 	if n.nodeMap&bit != 0 {
 		idx := index(n.nodeMap, bit)
 		child, added := n.children[idx].set(e, shift+fragmentBits, h)
-		clone := n.clone()
-		clone.children[idx] = child
-		return clone, added
+		return n.cloneWithChild(idx, child), added
 	}
 
-	clone := n.clone()
-	idx := index(clone.dataMap, bit)
-	clone.dataMap |= bit
-	clone.entries = insertEntry(clone.entries, idx, e)
-	return clone, true
+	return n.cloneWithInsertedEntry(bit, e), true
 }
 
 func (n *node[K, V]) setCollision(e entry[K, V], shift uint, h Hasher[K]) (*node[K, V], bool) {
@@ -320,11 +308,26 @@ func (n *node[K, V]) clone() *node[K, V] {
 	return &clone
 }
 
-func (n *node[K, V]) cloneWithoutEntry(bit uint32, idx int) *node[K, V] {
+func (n *node[K, V]) cloneWithEntry(idx int, e entry[K, V]) *node[K, V] {
+	clone := *n
+	clone.entries = append([]entry[K, V](nil), n.entries...)
+	clone.entries[idx] = e
+	return &clone
+}
+
+func (n *node[K, V]) cloneWithInsertedEntry(bit uint32, e entry[K, V]) *node[K, V] {
+	clone := *n
+	clone.dataMap |= bit
+	clone.entries = insertEntryCopy(n.entries, index(n.dataMap, bit), e)
+	return &clone
+}
+
+func (n *node[K, V]) cloneWithEntryReplacedByChild(bit uint32, entryIdx int, child *node[K, V]) *node[K, V] {
 	clone := *n
 	clone.dataMap &^= bit
-	clone.entries = removeEntry(n.entries, idx)
-	clone.children = append([]*node[K, V](nil), n.children...)
+	clone.entries = removeEntry(n.entries, entryIdx)
+	clone.nodeMap |= bit
+	clone.children = insertChildCopy(n.children, index(n.nodeMap, bit), child)
 	return &clone
 }
 
@@ -406,13 +409,6 @@ func index(bitmap, bit uint32) int {
 	return bits.OnesCount32(bitmap & (bit - 1))
 }
 
-func insertEntry[K, V any](entries []entry[K, V], idx int, e entry[K, V]) []entry[K, V] {
-	entries = append(entries, entry[K, V]{})
-	copy(entries[idx+1:], entries[idx:])
-	entries[idx] = e
-	return entries
-}
-
 func insertEntryCopy[K, V any](entries []entry[K, V], idx int, e entry[K, V]) []entry[K, V] {
 	out := make([]entry[K, V], len(entries)+1)
 	copy(out, entries[:idx])
@@ -428,11 +424,12 @@ func removeEntry[K, V any](entries []entry[K, V], idx int) []entry[K, V] {
 	return out
 }
 
-func insertChild[K, V any](children []*node[K, V], idx int, child *node[K, V]) []*node[K, V] {
-	children = append(children, nil)
-	copy(children[idx+1:], children[idx:])
-	children[idx] = child
-	return children
+func insertChildCopy[K, V any](children []*node[K, V], idx int, child *node[K, V]) []*node[K, V] {
+	out := make([]*node[K, V], len(children)+1)
+	copy(out, children[:idx])
+	out[idx] = child
+	copy(out[idx+1:], children[idx:])
+	return out
 }
 
 func removeChild[K, V any](children []*node[K, V], idx int) []*node[K, V] {

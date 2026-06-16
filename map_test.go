@@ -37,6 +37,38 @@ func TestMapOverwriteDoesNotGrow(t *testing.T) {
 	validateMap(t, n)
 }
 
+func TestMapSetInsertDoesNotMutateSnapshot(t *testing.T) {
+	m := NewMap[uint64, string](identityUint64Hasher{})
+	m = m.Set(1, "one")
+
+	n := m.Set(2, "two")
+
+	assertLen(t, m, 1)
+	assertGet(t, m, 1, "one")
+	assertMissing[uint64, string](t, m, 2)
+	assertLen(t, n, 2)
+	assertGet(t, n, 1, "one")
+	assertGet(t, n, 2, "two")
+	validateMap(t, m)
+	validateMap(t, n)
+}
+
+func TestMapSetEntryToBranchDoesNotMutateSnapshot(t *testing.T) {
+	m := NewMap[uint64, string](identityUint64Hasher{})
+	m = m.Set(0, "zero")
+
+	n := m.Set(32, "thirty-two")
+
+	assertLen(t, m, 1)
+	assertGet(t, m, 0, "zero")
+	assertMissing[uint64, string](t, m, 32)
+	assertLen(t, n, 2)
+	assertGet(t, n, 0, "zero")
+	assertGet(t, n, 32, "thirty-two")
+	validateMap(t, m)
+	validateMap(t, n)
+}
+
 func TestMapDelete(t *testing.T) {
 	m := NewMap[int, string](IntHasher{})
 	m = m.Set(1, "one")
@@ -94,6 +126,24 @@ func TestMapDeleteFromBranchDoesNotMutateSnapshot(t *testing.T) {
 	assertGet(t, n, 0, "zero")
 	assertGet(t, n, 32, "thirty-two")
 	assertMissing[uint64, string](t, n, 64)
+	validateMap(t, m)
+	validateMap(t, n)
+}
+
+func TestMapSetInBranchDoesNotMutateSnapshot(t *testing.T) {
+	m := NewMap[uint64, string](identityUint64Hasher{})
+	m = m.Set(0, "zero")
+	m = m.Set(32, "thirty-two")
+	m = m.Set(64, "sixty-four")
+
+	n := m.Set(64, "updated")
+
+	assertGet(t, m, 0, "zero")
+	assertGet(t, m, 32, "thirty-two")
+	assertGet(t, m, 64, "sixty-four")
+	assertGet(t, n, 0, "zero")
+	assertGet(t, n, 32, "thirty-two")
+	assertGet(t, n, 64, "updated")
 	validateMap(t, m)
 	validateMap(t, n)
 }
