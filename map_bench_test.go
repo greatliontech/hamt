@@ -129,6 +129,22 @@ func BenchmarkMapFullCollisionBuilderBuild(b *testing.B) {
 	benchmarkBuilderBuild(b, collisionBenchSizes(), collisionHasher{})
 }
 
+func BenchmarkMapCollisionSplitSetInsert(b *testing.B) {
+	for _, size := range collisionBenchSizes() {
+		b.Run(fmt.Sprintf("%d", size), func(b *testing.B) {
+			keys := benchKeys(size + 1)
+			missing := keys[size]
+			hasher := markedCollisionHasher{marked: missing}
+			m := buildOursWithHasher(keys[:size], hasher)
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				benchMapSink = m.Set(missing, i)
+			}
+		})
+	}
+}
+
 func BenchmarkMapSharedPrefixGetHit(b *testing.B) {
 	benchmarkGetHit(b, benchSizes(), sharedPrefixHasher{})
 }
@@ -243,6 +259,20 @@ type collisionHasher struct{}
 
 func (collisionHasher) Hash(benchKey) uint64     { return 1 }
 func (collisionHasher) Equal(a, b benchKey) bool { return a == b }
+
+// markedCollisionHasher collides every key on hash 0 except marked, whose
+// hash agrees with 0 on the three lowest fragments and then diverges, so
+// inserting marked splits an existing collision node.
+type markedCollisionHasher struct{ marked benchKey }
+
+func (h markedCollisionHasher) Hash(k benchKey) uint64 {
+	if k == h.marked {
+		return 1 << (3 * fragmentBits)
+	}
+	return 0
+}
+
+func (h markedCollisionHasher) Equal(a, b benchKey) bool { return a == b }
 
 type sharedPrefixHasher struct{}
 

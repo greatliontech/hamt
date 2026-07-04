@@ -186,34 +186,28 @@ type collisionEntry[K, V any] struct {
 	value V
 }
 
-type nodeKind uint8
-
-const (
-	nodeKindBranch nodeKind = iota
-	nodeKindCollision
-)
-
+// node is a branch when collision is nil and a collision node otherwise.
+// A collision node uses none of the branch fields; the collision payload
+// lives behind a pointer so branch nodes, which dominate any map with a
+// reasonable hasher, do not carry storage for it.
 type node[K, V any] struct {
-	branchNode[K, V]
-	kind nodeKind
-	collisionNode[K, V]
+	dataMap   uint32
+	nodeMap   uint32
+	entries   []entry[K, V]
+	children  []*node[K, V]
+	collision *collisionNode[K, V]
 }
 
-type branchNode[K, V any] struct {
-	dataMap  uint32
-	nodeMap  uint32
-	entries  []entry[K, V]
-	children []*node[K, V]
-}
-
+// collisionNode holds entries whose keys are distinct but whose full 64-bit
+// hashes are identical.
 type collisionNode[K, V any] struct {
-	collisionHash uint64
-	collisions    []collisionEntry[K, V]
+	hash    uint64
+	entries []collisionEntry[K, V]
 }
 
 func newSingleNode[K, V any](e entry[K, V], shift uint) *node[K, V] {
 	bit := bitpos(fragment(e.hash, shift))
-	return &node[K, V]{branchNode: branchNode[K, V]{dataMap: bit, entries: []entry[K, V]{e}}, kind: nodeKindBranch}
+	return &node[K, V]{dataMap: bit, entries: []entry[K, V]{e}}
 }
 
 func newCollisionNode[K, V any](hash uint64, entries []entry[K, V]) *node[K, V] {
@@ -221,39 +215,42 @@ func newCollisionNode[K, V any](hash uint64, entries []entry[K, V]) *node[K, V] 
 	for i, e := range entries {
 		collisions[i] = collisionEntry[K, V]{key: e.key, value: e.value}
 	}
-	return &node[K, V]{kind: nodeKindCollision, collisionNode: collisionNode[K, V]{collisionHash: hash, collisions: collisions}}
+	return &node[K, V]{collision: &collisionNode[K, V]{hash: hash, entries: collisions}}
 }
 
 func (n *node[K, V]) isCollision() bool {
-	return n.kind == nodeKindCollision
+	return n.collision != nil
 }
 
 func (n *node[K, V]) get(key K, hash uint64, shift uint, h Hasher[K]) (V, bool) {
 	var zero V
-	if n.isCollision() {
-		if hash != n.collisionHash {
+	for {
+		if c := n.collision; c != nil {
+			if hash != c.hash {
+				return zero, false
+			}
+			for _, e := range c.entries {
+				if h.Equal(e.key, key) {
+					return e.value, true
+				}
+			}
 			return zero, false
 		}
-		for _, e := range n.collisions {
-			if h.Equal(e.key, key) {
+
+		bit := bitpos(fragment(hash, shift))
+		if n.dataMap&bit != 0 {
+			e := n.entries[index(n.dataMap, bit)]
+			if e.hash == hash && h.Equal(e.key, key) {
 				return e.value, true
 			}
+			return zero, false
 		}
-		return zero, false
-	}
-
-	bit := bitpos(fragment(hash, shift))
-	if n.dataMap&bit != 0 {
-		e := n.entries[index(n.dataMap, bit)]
-		if e.hash == hash && h.Equal(e.key, key) {
-			return e.value, true
+		if n.nodeMap&bit == 0 {
+			return zero, false
 		}
-		return zero, false
+		n = n.children[index(n.nodeMap, bit)]
+		shift += fragmentBits
 	}
-	if n.nodeMap&bit != 0 {
-		return n.children[index(n.nodeMap, bit)].get(key, hash, shift+fragmentBits, h)
-	}
-	return zero, false
 }
 
 func (n *node[K, V]) set(e entry[K, V], shift uint, h Hasher[K]) (*node[K, V], bool) {
@@ -319,16 +316,11 @@ func (n *node[K, V]) setMutable(e entry[K, V], shift uint, h Hasher[K]) (*node[K
 }
 
 func (n *node[K, V]) setCollision(e entry[K, V], shift uint, h Hasher[K]) (*node[K, V], bool) {
-	if e.hash != n.collisionHash {
-		var root *node[K, V]
-		for _, existing := range n.collisions {
-			root = insertKnown(root, entry[K, V]{key: existing.key, value: existing.value, hash: n.collisionHash}, shift, h)
-		}
-		root = insertKnown(root, e, shift, h)
-		return root, true
+	if e.hash != n.collision.hash {
+		return pushCollision(n, e, shift), true
 	}
 
-	for i, old := range n.collisions {
+	for i, old := range n.collision.entries {
 		if h.Equal(old.key, e.key) {
 			return n.cloneCollisionWithEntry(i, e), false
 		}
@@ -338,24 +330,41 @@ func (n *node[K, V]) setCollision(e entry[K, V], shift uint, h Hasher[K]) (*node
 }
 
 func (n *node[K, V]) setCollisionMutable(e entry[K, V], shift uint, h Hasher[K]) (*node[K, V], bool) {
-	if e.hash != n.collisionHash {
-		var root *node[K, V]
-		for _, existing := range n.collisions {
-			root = insertKnownMutable(root, entry[K, V]{key: existing.key, value: existing.value, hash: n.collisionHash}, shift, h)
-		}
-		root = insertKnownMutable(root, e, shift, h)
-		return root, true
+	c := n.collision
+	if e.hash != c.hash {
+		return pushCollision(n, e, shift), true
 	}
 
-	for i, old := range n.collisions {
+	for i, old := range c.entries {
 		if h.Equal(old.key, e.key) {
-			n.collisions[i] = collisionEntry[K, V]{key: e.key, value: e.value}
+			c.entries[i] = collisionEntry[K, V]{key: e.key, value: e.value}
 			return n, false
 		}
 	}
 
-	n.collisions = append(n.collisions, collisionEntry[K, V]{key: e.key, value: e.value})
+	c.entries = append(c.entries, collisionEntry[K, V]{key: e.key, value: e.value})
 	return n, true
+}
+
+// pushCollision resolves an insert whose hash differs from the collision
+// node's hash. The collision node moves down unchanged — shared, since
+// nothing in it changes — along the fragments the two hashes still agree
+// on, and e lands where they diverge. The hashes differ in some bit below
+// 64, so a diverging fragment exists at shift <= 60 and the recursion
+// terminates.
+func pushCollision[K, V any](collision *node[K, V], e entry[K, V], shift uint) *node[K, V] {
+	collisionBit := bitpos(fragment(collision.collision.hash, shift))
+	entryBit := bitpos(fragment(e.hash, shift))
+	if collisionBit != entryBit {
+		return &node[K, V]{
+			dataMap:  entryBit,
+			nodeMap:  collisionBit,
+			entries:  []entry[K, V]{e},
+			children: []*node[K, V]{collision},
+		}
+	}
+	child := pushCollision(collision, e, shift+fragmentBits)
+	return &node[K, V]{nodeMap: collisionBit, children: []*node[K, V]{child}}
 }
 
 func (n *node[K, V]) delete(key K, hash uint64, shift uint, h Hasher[K]) (*node[K, V], bool) {
@@ -442,14 +451,15 @@ func (n *node[K, V]) deleteMutable(key K, hash uint64, shift uint, h Hasher[K]) 
 }
 
 func (n *node[K, V]) deleteCollision(key K, hash uint64, h Hasher[K]) (*node[K, V], bool) {
-	if hash != n.collisionHash {
+	c := n.collision
+	if hash != c.hash {
 		return n, false
 	}
-	for i, e := range n.collisions {
+	for i, e := range c.entries {
 		if !h.Equal(e.key, key) {
 			continue
 		}
-		if len(n.collisions) == 1 {
+		if len(c.entries) == 1 {
 			return nil, true
 		}
 		return n.cloneCollisionWithoutEntry(i), true
@@ -458,25 +468,26 @@ func (n *node[K, V]) deleteCollision(key K, hash uint64, h Hasher[K]) (*node[K, 
 }
 
 func (n *node[K, V]) deleteCollisionMutable(key K, hash uint64, h Hasher[K]) (*node[K, V], bool) {
-	if hash != n.collisionHash {
+	c := n.collision
+	if hash != c.hash {
 		return n, false
 	}
-	for i, e := range n.collisions {
+	for i, e := range c.entries {
 		if !h.Equal(e.key, key) {
 			continue
 		}
-		if len(n.collisions) == 1 {
+		if len(c.entries) == 1 {
 			return nil, true
 		}
-		n.collisions = removeCollisionMutable(n.collisions, i)
+		c.entries = removeCollisionMutable(c.entries, i)
 		return n, true
 	}
 	return n, false
 }
 
 func (n *node[K, V]) each(fn func(K, V) bool) bool {
-	if n.isCollision() {
-		for _, e := range n.collisions {
+	if c := n.collision; c != nil {
+		for _, e := range c.entries {
 			if !fn(e.key, e.value) {
 				return false
 			}
@@ -484,17 +495,20 @@ func (n *node[K, V]) each(fn func(K, V) bool) bool {
 		return true
 	}
 
+	// dataMap and nodeMap are disjoint, so each set bit of the union is
+	// exactly one entry or one child, and ascending bit order visits the
+	// slices sequentially.
 	entryIdx := 0
 	childIdx := 0
-	for bit := uint32(1); bit != 0; bit <<= 1 {
+	for bitmap := n.dataMap | n.nodeMap; bitmap != 0; bitmap &= bitmap - 1 {
+		bit := bitmap & -bitmap
 		if n.dataMap&bit != 0 {
 			e := n.entries[entryIdx]
 			entryIdx++
 			if !fn(e.key, e.value) {
 				return false
 			}
-		}
-		if n.nodeMap&bit != 0 {
+		} else {
 			child := n.children[childIdx]
 			childIdx++
 			if !child.each(fn) {
@@ -507,10 +521,10 @@ func (n *node[K, V]) each(fn func(K, V) bool) bool {
 
 func (n *node[K, V]) singleton() (entry[K, V], bool) {
 	var zero entry[K, V]
-	if n.isCollision() {
-		if len(n.collisions) == 1 {
-			e := n.collisions[0]
-			return entry[K, V]{key: e.key, value: e.value, hash: n.collisionHash}, true
+	if c := n.collision; c != nil {
+		if len(c.entries) == 1 {
+			e := c.entries[0]
+			return entry[K, V]{key: e.key, value: e.value, hash: c.hash}, true
 		}
 		return zero, false
 	}
@@ -521,22 +535,21 @@ func (n *node[K, V]) singleton() (entry[K, V], bool) {
 }
 
 func (n *node[K, V]) cloneCollisionWithEntry(idx int, e entry[K, V]) *node[K, V] {
-	clone := *n
-	clone.collisions = append([]collisionEntry[K, V](nil), n.collisions...)
-	clone.collisions[idx] = collisionEntry[K, V]{key: e.key, value: e.value}
-	return &clone
+	entries := append([]collisionEntry[K, V](nil), n.collision.entries...)
+	entries[idx] = collisionEntry[K, V]{key: e.key, value: e.value}
+	return &node[K, V]{collision: &collisionNode[K, V]{hash: n.collision.hash, entries: entries}}
 }
 
 func (n *node[K, V]) cloneCollisionWithInsertedEntry(e entry[K, V]) *node[K, V] {
-	clone := *n
-	clone.collisions = insertCollisionCopy(n.collisions, len(n.collisions), collisionEntry[K, V]{key: e.key, value: e.value})
-	return &clone
+	old := n.collision.entries
+	entries := make([]collisionEntry[K, V], len(old)+1)
+	copy(entries, old)
+	entries[len(old)] = collisionEntry[K, V]{key: e.key, value: e.value}
+	return &node[K, V]{collision: &collisionNode[K, V]{hash: n.collision.hash, entries: entries}}
 }
 
 func (n *node[K, V]) cloneCollisionWithoutEntry(idx int) *node[K, V] {
-	clone := *n
-	clone.collisions = removeCollision(n.collisions, idx)
-	return &clone
+	return &node[K, V]{collision: &collisionNode[K, V]{hash: n.collision.hash, entries: removeCollision(n.collision.entries, idx)}}
 }
 
 func (n *node[K, V]) cloneWithEntry(idx int, e entry[K, V]) *node[K, V] {
@@ -586,7 +599,7 @@ func (n *node[K, V]) cloneWithChildReplacedByEntry(bit uint32, childIdx int, e e
 }
 
 func (n *node[K, V]) isEmpty() bool {
-	return !n.isCollision() && n.dataMap == 0 && n.nodeMap == 0
+	return n.collision == nil && n.dataMap == 0 && n.nodeMap == 0
 }
 
 func mergeEntries[K, V any](a, b entry[K, V], shift uint) *node[K, V] {
@@ -597,7 +610,7 @@ func mergeEntries[K, V any](a, b entry[K, V], shift uint) *node[K, V] {
 	aBit := bitpos(fragment(a.hash, shift))
 	bBit := bitpos(fragment(b.hash, shift))
 	if aBit != bBit {
-		n := &node[K, V]{branchNode: branchNode[K, V]{dataMap: aBit | bBit}, kind: nodeKindBranch}
+		n := &node[K, V]{dataMap: aBit | bBit}
 		if aBit < bBit {
 			n.entries = []entry[K, V]{a, b}
 		} else {
@@ -607,23 +620,7 @@ func mergeEntries[K, V any](a, b entry[K, V], shift uint) *node[K, V] {
 	}
 
 	child := mergeEntries(a, b, shift+fragmentBits)
-	return &node[K, V]{branchNode: branchNode[K, V]{nodeMap: aBit, children: []*node[K, V]{child}}, kind: nodeKindBranch}
-}
-
-func insertKnown[K, V any](root *node[K, V], e entry[K, V], shift uint, h Hasher[K]) *node[K, V] {
-	if root == nil {
-		return newSingleNode(e, shift)
-	}
-	root, _ = root.set(e, shift, h)
-	return root
-}
-
-func insertKnownMutable[K, V any](root *node[K, V], e entry[K, V], shift uint, h Hasher[K]) *node[K, V] {
-	if root == nil {
-		return newSingleNode(e, shift)
-	}
-	root, _ = root.setMutable(e, shift, h)
-	return root
+	return &node[K, V]{nodeMap: aBit, children: []*node[K, V]{child}}
 }
 
 func fragment(hash uint64, shift uint) uint32 {
@@ -668,14 +665,6 @@ func removeEntryMutable[K, V any](entries []entry[K, V], idx int) []entry[K, V] 
 	var zero entry[K, V]
 	entries[len(entries)-1] = zero
 	return entries[:len(entries)-1]
-}
-
-func insertCollisionCopy[K, V any](entries []collisionEntry[K, V], idx int, e collisionEntry[K, V]) []collisionEntry[K, V] {
-	out := make([]collisionEntry[K, V], len(entries)+1)
-	copy(out, entries[:idx])
-	out[idx] = e
-	copy(out[idx+1:], entries[idx:])
-	return out
 }
 
 func removeCollision[K, V any](entries []collisionEntry[K, V], idx int) []collisionEntry[K, V] {

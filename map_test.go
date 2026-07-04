@@ -3,6 +3,7 @@ package hamt
 import (
 	"fmt"
 	"math/bits"
+	"sync"
 	"testing"
 	"testing/quick"
 )
@@ -298,6 +299,42 @@ func TestMapCollisionExpansionPreservesExistingHashes(t *testing.T) {
 	validateMap(t, m)
 }
 
+func TestMapCollisionExpansionDoesNotMutateSnapshot(t *testing.T) {
+	m := NewMap[int, string](splitCollisionHasher{})
+	m = m.Set(1, "one")
+	m = m.Set(2, "two")
+
+	n := m.Set(3, "three")
+
+	assertLen(t, m, 2)
+	assertGet(t, m, 1, "one")
+	assertGet(t, m, 2, "two")
+	assertMissing[int, string](t, m, 3)
+	assertLen(t, n, 3)
+	assertGet(t, n, 1, "one")
+	assertGet(t, n, 2, "two")
+	assertGet(t, n, 3, "three")
+	validateMap(t, m)
+	validateMap(t, n)
+}
+
+func TestMapCollisionExpansionDeepDivergence(t *testing.T) {
+	m := NewMap[int, string](splitCollisionHasher{})
+	m = m.Set(1, "one")
+	m = m.Set(2, "two")
+
+	n := m.Set(4, "four")
+
+	assertLen(t, m, 2)
+	assertMissing[int, string](t, m, 4)
+	assertLen(t, n, 3)
+	assertGet(t, n, 1, "one")
+	assertGet(t, n, 2, "two")
+	assertGet(t, n, 4, "four")
+	validateMap(t, m)
+	validateMap(t, n)
+}
+
 func TestMapDeleteCanonicalizesSingletonCollision(t *testing.T) {
 	m := NewMap[int, string](constantIntHasher{})
 	m = m.Set(1, "one")
@@ -407,9 +444,104 @@ func TestMapRangeStopsInCollision(t *testing.T) {
 	validateMap(t, m)
 }
 
+func TestMapConcurrentReaders(t *testing.T) {
+	m := NewMap[int, int](collisionProneHasher{})
+	for i := 0; i < 200; i++ {
+		m = m.Set(i, i)
+	}
+
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for g := 0; g < 8; g++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			for i := 0; i < 200; i++ {
+				if v, ok := m.Get(i); !ok || v != i {
+					t.Errorf("Get(%d) = %d, %v; want %d, true", i, v, ok, i)
+					return
+				}
+			}
+			count := 0
+			m.Range(func(int, int) bool {
+				count++
+				return true
+			})
+			if count != 200 {
+				t.Errorf("range count = %d, want 200", count)
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+}
+
+func TestMapIterationDeterministicForSameHistory(t *testing.T) {
+	// Seeding a same-bucket pair first forms a shallow collision node, so the
+	// next different-bucket insert pushes it down a branch chain.
+	buildMap := func() Map[int, int] {
+		m := NewMap[int, int](collisionProneHasher{})
+		m = m.Set(0, 0)
+		m = m.Set(7, 7)
+		for i := 0; i < 60; i++ {
+			m = m.Set(i, i)
+		}
+		for i := 0; i < 60; i += 3 {
+			m = m.Delete(i)
+		}
+		return m
+	}
+	buildBuilder := func() Map[int, int] {
+		b := NewBuilder[int, int](collisionProneHasher{})
+		b.Set(0, 0)
+		b.Set(7, 7)
+		for i := 0; i < 60; i++ {
+			b.Set(i, i)
+		}
+		for i := 0; i < 60; i += 3 {
+			b.Delete(i)
+		}
+		return b.Map()
+	}
+
+	assertSameOrder(t, rangeKeys(buildMap()), rangeKeys(buildMap()))
+	assertSameOrder(t, rangeKeys(buildBuilder()), rangeKeys(buildBuilder()))
+}
+
+func rangeKeys[K comparable, V any](m Map[K, V]) []K {
+	var keys []K
+	m.Range(func(k K, _ V) bool {
+		keys = append(keys, k)
+		return true
+	})
+	return keys
+}
+
+func assertSameOrder[K comparable](t *testing.T, a, b []K) {
+	t.Helper()
+	if len(a) != len(b) {
+		t.Fatalf("iteration lengths differ: %d vs %d", len(a), len(b))
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			t.Fatalf("iteration order differs at %d: %v vs %v", i, a[i], b[i])
+		}
+	}
+}
+
 func TestMapQuickAgainstBuiltin(t *testing.T) {
+	quickCheckMap(t, IntHasher{})
+}
+
+func TestMapQuickAgainstBuiltinCollisionProne(t *testing.T) {
+	quickCheckMap(t, collisionProneHasher{})
+}
+
+func quickCheckMap(t *testing.T, hasher Hasher[int]) {
+	t.Helper()
 	prop := func(ops []uint64) bool {
-		m := NewMap[int, int](IntHasher{})
+		m := NewMap[int, int](hasher)
 		want := map[int]int{}
 
 		for _, op := range ops {
@@ -575,6 +707,20 @@ func TestBuilderCollisionExpansionPreservesExistingHashes(t *testing.T) {
 	validateMap(t, m)
 }
 
+func TestBuilderCollisionExpansionDeepDivergence(t *testing.T) {
+	b := NewBuilder[int, string](splitCollisionHasher{})
+	b.Set(1, "one")
+	b.Set(2, "two")
+	b.Set(4, "four")
+	m := b.Map()
+
+	assertLen(t, m, 3)
+	assertGet(t, m, 1, "one")
+	assertGet(t, m, 2, "two")
+	assertGet(t, m, 4, "four")
+	validateMap(t, m)
+}
+
 func TestBuilderDeleteCanonicalizesSingletonCollision(t *testing.T) {
 	b := NewBuilder[int, string](constantIntHasher{})
 	b.Set(1, "one")
@@ -631,8 +777,17 @@ func TestBuilderCopyInvalidatedByMap(t *testing.T) {
 }
 
 func TestBuilderQuickAgainstBuiltin(t *testing.T) {
+	quickCheckBuilder(t, IntHasher{})
+}
+
+func TestBuilderQuickAgainstBuiltinCollisionProne(t *testing.T) {
+	quickCheckBuilder(t, collisionProneHasher{})
+}
+
+func quickCheckBuilder(t *testing.T, hasher Hasher[int]) {
+	t.Helper()
 	prop := func(ops []uint64) bool {
-		b := NewBuilder[int, int](IntHasher{})
+		b := NewBuilder[int, int](hasher)
 		want := map[int]int{}
 
 		for _, op := range ops {
@@ -761,7 +916,7 @@ func checkMap[K comparable, V comparable](m Map[K, V]) error {
 		}
 		return nil
 	}
-	count, err := checkNode(m.root, 0, m.hasher)
+	count, err := checkNode(m.root, 0, 0, m.hasher)
 	if err != nil {
 		return err
 	}
@@ -771,17 +926,29 @@ func checkMap[K comparable, V comparable](m Map[K, V]) error {
 	return nil
 }
 
-func checkNode[K comparable, V comparable](n *node[K, V], shift uint, h Hasher[K]) (int, error) {
+// checkNode validates the subtree rooted at n. prefix holds the hash bits
+// implied by the path from the root: every hash stored below n must match
+// it in the low shift bits, otherwise lookups walking those fragments
+// cannot reach the entry.
+func checkNode[K comparable, V comparable](n *node[K, V], shift uint, prefix uint64, h Hasher[K]) (int, error) {
 	if n == nil {
 		return 0, fmt.Errorf("nil child")
 	}
+	prefixMask := uint64(1)<<shift - 1
 	if n.isCollision() {
-		if len(n.collisions) < 2 {
-			return 0, fmt.Errorf("collision len = %d, want >= 2", len(n.collisions))
+		c := n.collision
+		if n.dataMap != 0 || n.nodeMap != 0 || n.entries != nil || n.children != nil {
+			return 0, fmt.Errorf("collision node carries branch payload")
+		}
+		if len(c.entries) < 2 {
+			return 0, fmt.Errorf("collision len = %d, want >= 2", len(c.entries))
+		}
+		if c.hash&prefixMask != prefix {
+			return 0, fmt.Errorf("collision node stored under wrong path")
 		}
 		seen := map[K]struct{}{}
-		for _, e := range n.collisions {
-			if h.Hash(e.key) != n.collisionHash {
+		for _, e := range c.entries {
+			if h.Hash(e.key) != c.hash {
 				return 0, fmt.Errorf("stored hash mismatch")
 			}
 			if _, ok := seen[e.key]; ok {
@@ -789,7 +956,7 @@ func checkNode[K comparable, V comparable](n *node[K, V], shift uint, h Hasher[K
 			}
 			seen[e.key] = struct{}{}
 		}
-		return len(n.collisions), nil
+		return len(c.entries), nil
 	}
 
 	if n.dataMap&n.nodeMap != 0 {
@@ -804,10 +971,16 @@ func checkNode[K comparable, V comparable](n *node[K, V], shift uint, h Hasher[K
 	if n.dataMap == 0 && n.nodeMap == 0 {
 		return 0, fmt.Errorf("empty branch")
 	}
+	// The shift-60 fragment has only 4 hash bits, so fragments >= 16 are
+	// unreachable there.
+	if shift == 60 && (n.dataMap|n.nodeMap) >= 1<<16 {
+		return 0, fmt.Errorf("fragment beyond hash range")
+	}
 
 	count := 0
 	entryIdx := 0
-	for bit := uint32(1); bit != 0; bit <<= 1 {
+	for frag := uint(0); frag < 32; frag++ {
+		bit := uint32(1) << frag
 		if n.dataMap&bit == 0 {
 			continue
 		}
@@ -816,6 +989,9 @@ func checkNode[K comparable, V comparable](n *node[K, V], shift uint, h Hasher[K
 		if bitpos(fragment(e.hash, shift)) != bit {
 			return 0, fmt.Errorf("entry stored under wrong fragment")
 		}
+		if e.hash&prefixMask != prefix {
+			return 0, fmt.Errorf("entry stored under wrong path")
+		}
 		if h.Hash(e.key) != e.hash {
 			return 0, fmt.Errorf("stored hash mismatch")
 		}
@@ -823,13 +999,14 @@ func checkNode[K comparable, V comparable](n *node[K, V], shift uint, h Hasher[K
 	}
 
 	childIdx := 0
-	for bit := uint32(1); bit != 0; bit <<= 1 {
+	for frag := uint(0); frag < 32; frag++ {
+		bit := uint32(1) << frag
 		if n.nodeMap&bit == 0 {
 			continue
 		}
 		child := n.children[childIdx]
 		childIdx++
-		childCount, err := checkNode(child, shift+fragmentBits, h)
+		childCount, err := checkNode(child, shift+fragmentBits, prefix|uint64(frag)<<shift, h)
 		if err != nil {
 			return 0, err
 		}
@@ -855,12 +1032,22 @@ func (splitCollisionHasher) Hash(v int) uint64 {
 		return 0
 	case 3:
 		return 1 << fragmentBits
+	case 4:
+		return 1 << (3 * fragmentBits)
 	default:
 		return uint64(v) << fragmentBits
 	}
 }
 
 func (splitCollisionHasher) Equal(a, b int) bool { return a == b }
+
+// collisionProneHasher maps keys into seven buckets whose hashes agree on
+// the six lowest fragments, so property tests exercise full collisions,
+// collision-node splits, and multi-level branch chains together.
+type collisionProneHasher struct{}
+
+func (collisionProneHasher) Hash(v int) uint64   { return uint64(v%7) << 32 }
+func (collisionProneHasher) Equal(a, b int) bool { return a == b }
 
 type identityUint64Hasher struct{}
 
