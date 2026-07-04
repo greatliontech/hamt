@@ -7,12 +7,12 @@ import (
 )
 
 func TestNilBuilderHasherPanicsOnSet(t *testing.T) {
-	b := NewBuilder[int, int](nil)
+	b := NewBuilderWithHasher[int, int](nil)
 	assertPanics(t, func() { b.Set(1, 1) })
 }
 
 func TestBuilderSetGetLenMap(t *testing.T) {
-	b := NewBuilder[int, string](IntHasher{})
+	b := NewBuilderWithHasher[int, string](testIntHasher{})
 	if b.Len() != 0 {
 		t.Fatalf("empty builder len = %d, want 0", b.Len())
 	}
@@ -36,7 +36,7 @@ func TestBuilderSetGetLenMap(t *testing.T) {
 }
 
 func TestBuilderDelete(t *testing.T) {
-	b := NewBuilder[int, string](IntHasher{})
+	b := NewBuilderWithHasher[int, string](testIntHasher{})
 	b.Set(1, "one")
 	b.Set(2, "two")
 	b.Set(3, "three")
@@ -57,7 +57,7 @@ func TestBuilderDelete(t *testing.T) {
 }
 
 func TestBuilderDeleteMissingSameFragment(t *testing.T) {
-	b := NewBuilder[uint64, string](identityUint64Hasher{})
+	b := NewBuilderWithHasher[uint64, string](identityUint64Hasher{})
 	b.Set(0, "zero")
 	b.Delete(32)
 	m := b.Map()
@@ -68,7 +68,7 @@ func TestBuilderDeleteMissingSameFragment(t *testing.T) {
 }
 
 func TestBuilderForcedHashCollisions(t *testing.T) {
-	b := NewBuilder[int, string](constantIntHasher{})
+	b := NewBuilderWithHasher[int, string](constantIntHasher{})
 	for i := 0; i < 20; i++ {
 		b.Set(i, fmt.Sprintf("value-%d", i))
 	}
@@ -92,7 +92,7 @@ func TestBuilderForcedHashCollisions(t *testing.T) {
 }
 
 func TestBuilderDeleteMissingCollision(t *testing.T) {
-	b := NewBuilder[int, string](constantIntHasher{})
+	b := NewBuilderWithHasher[int, string](constantIntHasher{})
 	b.Set(1, "one")
 	b.Set(2, "two")
 	b.Delete(3)
@@ -105,7 +105,7 @@ func TestBuilderDeleteMissingCollision(t *testing.T) {
 }
 
 func TestBuilderDeleteHashMismatchCollision(t *testing.T) {
-	b := NewBuilder[int, string](splitCollisionHasher{})
+	b := NewBuilderWithHasher[int, string](splitCollisionHasher{})
 	b.Set(1, "one")
 	b.Set(2, "two")
 	b.Delete(3)
@@ -118,7 +118,7 @@ func TestBuilderDeleteHashMismatchCollision(t *testing.T) {
 }
 
 func TestBuilderCollisionExpansionPreservesExistingHashes(t *testing.T) {
-	b := NewBuilder[int, string](splitCollisionHasher{})
+	b := NewBuilderWithHasher[int, string](splitCollisionHasher{})
 	b.Set(1, "one")
 	b.Set(2, "two")
 	b.Set(3, "three")
@@ -132,7 +132,7 @@ func TestBuilderCollisionExpansionPreservesExistingHashes(t *testing.T) {
 }
 
 func TestBuilderCollisionExpansionDeepDivergence(t *testing.T) {
-	b := NewBuilder[int, string](splitCollisionHasher{})
+	b := NewBuilderWithHasher[int, string](splitCollisionHasher{})
 	b.Set(1, "one")
 	b.Set(2, "two")
 	b.Set(4, "four")
@@ -146,7 +146,7 @@ func TestBuilderCollisionExpansionDeepDivergence(t *testing.T) {
 }
 
 func TestBuilderDeleteCanonicalizesSingletonCollision(t *testing.T) {
-	b := NewBuilder[int, string](constantIntHasher{})
+	b := NewBuilderWithHasher[int, string](constantIntHasher{})
 	b.Set(1, "one")
 	b.Set(2, "two")
 	b.Delete(2)
@@ -169,7 +169,7 @@ func TestDeleteMutableUndersizedCollisionChildPanics(t *testing.T) {
 }
 
 func TestBuilderMapInvalidatesBuilder(t *testing.T) {
-	b := NewBuilder[int, string](IntHasher{})
+	b := NewBuilderWithHasher[int, string](testIntHasher{})
 	b.Set(1, "one")
 	m := b.Map()
 	assertGet(t, m, 1, "one")
@@ -182,7 +182,7 @@ func TestBuilderMapInvalidatesBuilder(t *testing.T) {
 }
 
 func TestBuilderMapResultIsImmutable(t *testing.T) {
-	b := NewBuilder[int, string](IntHasher{})
+	b := NewBuilderWithHasher[int, string](testIntHasher{})
 	b.Set(1, "one")
 	m := b.Map()
 	n := m.Set(1, "uno")
@@ -194,7 +194,7 @@ func TestBuilderMapResultIsImmutable(t *testing.T) {
 }
 
 func TestBuilderCopyInvalidatedByMap(t *testing.T) {
-	b := NewBuilder[int, string](IntHasher{})
+	b := NewBuilderWithHasher[int, string](testIntHasher{})
 	b.Set(1, "one")
 	copied := *b
 
@@ -205,8 +205,25 @@ func TestBuilderCopyInvalidatedByMap(t *testing.T) {
 	validateMap(t, m)
 }
 
+func TestNewBuilderUsesLanguageEquality(t *testing.T) {
+	b := NewBuilder[string, int]()
+	b.Set("jane", 1)
+	b.Set("jane", 2)
+	b.Set("susy", 3)
+	b.Delete("susy")
+	m := b.Map()
+
+	assertLen(t, m, 1)
+	assertGet(t, m, "jane", 2)
+	validateMap(t, m)
+}
+
 func TestBuilderQuickAgainstBuiltin(t *testing.T) {
-	quickCheckBuilder(t, IntHasher{})
+	quickCheckBuilder(t, testIntHasher{})
+}
+
+func TestBuilderQuickAgainstBuiltinDefaultHasher(t *testing.T) {
+	quickCheckBuilder(t, defaultHasher[int]{})
 }
 
 func TestBuilderQuickAgainstBuiltinCollisionProne(t *testing.T) {
@@ -216,7 +233,7 @@ func TestBuilderQuickAgainstBuiltinCollisionProne(t *testing.T) {
 func quickCheckBuilder(t *testing.T, hasher Hasher[int]) {
 	t.Helper()
 	prop := func(ops []uint64) bool {
-		b := NewBuilder[int, int](hasher)
+		b := NewBuilderWithHasher[int, int](hasher)
 		want := map[int]int{}
 
 		for _, op := range ops {

@@ -5,7 +5,8 @@ This package provides a generic immutable hash map for Go.
 ## Public Contract
 
 - `Map[K, V]` stores at most one value for each key according to the map's `Hasher[K]`.
-- `NewMap[K, V](hasher)` creates an empty map. `hasher` must be non-nil before an operation needs to hash a key.
+- `New[K, V]()` creates an empty map keyed by language equality. The key type must satisfy `comparable`; keys are the same map key exactly when `==` reports them equal.
+- `NewWithHasher[K, V](hasher)` creates an empty map whose key identity is defined by `hasher`. `hasher` must be non-nil before an operation needs to hash a key.
 - `Len` returns the number of reachable key/value pairs.
 - `Get` returns the value for a key and whether the key exists.
 - `Set` returns a map where the key is associated with the supplied value.
@@ -19,7 +20,7 @@ Every update operation is persistent. A map returned by `Set` or `Delete` may sh
 
 ## Builder
 
-`NewBuilder[K, V](hasher)` creates an empty builder. `Builder.Set` and `Builder.Delete` mutate the builder and do not return a new builder. `Builder.Map` returns the built immutable map and invalidates the builder. Any later builder method call after `Map` must panic.
+`NewBuilder[K, V]()` and `NewBuilderWithHasher[K, V](hasher)` create empty builders with the same key-identity choices as `New` and `NewWithHasher`. `Builder.Set` and `Builder.Delete` mutate the builder and do not return a new builder. `Builder.Map` returns the built immutable map and invalidates the builder. Any later builder method call after `Map` must panic.
 
 The map returned by `Builder.Map` follows the same immutability, hashing, equality, collision, iteration, and structural canonicalization rules as any other `Map`.
 
@@ -32,6 +33,12 @@ The map returned by `Builder.Map` follows the same immutability, hashing, equali
 - If the same key is hashed multiple times while it is stored in a map, the hash must be stable.
 
 Violating this contract makes lookups, updates, and deletes undefined for the affected keys.
+
+### Default Key Identity
+
+`New` and `NewBuilder` use language equality: `Equal` is `==`, and hashes come from a hash function seeded once per process. For any key `k` with `k == k`, the hash is stable for the lifetime of the process, satisfying the stability requirement above. Keys not equal to themselves (those containing NaN) hash unpredictably on each call and are never `Equal` to any key; as with Go's builtin maps, such keys are insert-only and unreachable once stored. Hashes are not stable across processes; consequently iteration order over default-keyed maps may differ between runs, which the Iteration section already permits.
+
+Interface keys holding non-comparable dynamic values panic when an operation hashes the key (`Set` always; `Get` and `Delete` on non-empty maps), as `==` does.
 
 ## Collision Semantics
 

@@ -2,13 +2,14 @@ package hamt_test
 
 import (
 	"fmt"
+	"hash/maphash"
 	"strings"
 
 	"github.com/thegrumpylion/hamt"
 )
 
 func ExampleMap() {
-	m0 := hamt.NewMap[string, int](hamt.StringHasher{})
+	m0 := hamt.New[string, int]()
 	m1 := m0.Set("jane", 100)
 	m2 := m1.Set("jane", 300)
 
@@ -27,7 +28,7 @@ func ExampleMap() {
 }
 
 func ExampleBuilder() {
-	b := hamt.NewBuilder[string, int](hamt.StringHasher{})
+	b := hamt.NewBuilder[string, int]()
 	b.Set("jane", 100)
 	b.Set("susy", 200)
 	b.Set("jane", 300)
@@ -48,7 +49,7 @@ func ExampleBuilder() {
 }
 
 func ExampleHasher() {
-	m := hamt.NewMap[string, string](caseInsensitiveHasher{})
+	m := hamt.NewWithHasher[string, string](caseInsensitiveHasher{})
 	m = m.Set("Jane", "first")
 	m = m.Set("jane", "second")
 
@@ -61,10 +62,12 @@ func ExampleHasher() {
 	// second
 }
 
+var caseInsensitiveSeed = maphash.MakeSeed()
+
 type caseInsensitiveHasher struct{}
 
 func (caseInsensitiveHasher) Hash(s string) uint64 {
-	return hamt.StringHasher{}.Hash(strings.ToLower(s))
+	return maphash.String(caseInsensitiveSeed, strings.ToLower(s))
 }
 
 func (caseInsensitiveHasher) Equal(a, b string) bool {

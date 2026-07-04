@@ -12,8 +12,15 @@ type builderState[K, V any] struct {
 	valid  bool
 }
 
-// NewBuilder returns an empty builder.
-func NewBuilder[K, V any](hasher Hasher[K]) *Builder[K, V] {
+// NewBuilder returns an empty builder keyed by language equality, matching
+// New.
+func NewBuilder[K comparable, V any]() *Builder[K, V] {
+	return NewBuilderWithHasher[K, V](defaultHasher[K]{})
+}
+
+// NewBuilderWithHasher returns an empty builder whose key identity is
+// defined by hasher, matching NewWithHasher.
+func NewBuilderWithHasher[K, V any](hasher Hasher[K]) *Builder[K, V] {
 	return &Builder[K, V]{state: &builderState[K, V]{hasher: hasher, valid: true}}
 }
 

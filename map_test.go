@@ -2,6 +2,7 @@ package hamt
 
 import (
 	"fmt"
+	"math"
 	"math/bits"
 	"sync"
 	"testing"
@@ -9,7 +10,7 @@ import (
 )
 
 func TestMapSetGetLen(t *testing.T) {
-	m := NewMap[int, string](IntHasher{})
+	m := NewWithHasher[int, string](testIntHasher{})
 
 	if m.Len() != 0 {
 		t.Fatalf("empty len = %d, want 0", m.Len())
@@ -29,7 +30,7 @@ func TestMapSetGetLen(t *testing.T) {
 }
 
 func TestMapOverwriteDoesNotGrow(t *testing.T) {
-	m := NewMap[int, string](IntHasher{}).Set(1, "one")
+	m := NewWithHasher[int, string](testIntHasher{}).Set(1, "one")
 	n := m.Set(1, "uno")
 
 	assertLen(t, n, 1)
@@ -39,7 +40,7 @@ func TestMapOverwriteDoesNotGrow(t *testing.T) {
 }
 
 func TestMapSetInsertDoesNotMutateSnapshot(t *testing.T) {
-	m := NewMap[uint64, string](identityUint64Hasher{})
+	m := NewWithHasher[uint64, string](identityUint64Hasher{})
 	m = m.Set(1, "one")
 
 	n := m.Set(2, "two")
@@ -55,7 +56,7 @@ func TestMapSetInsertDoesNotMutateSnapshot(t *testing.T) {
 }
 
 func TestMapSetEntryToBranchDoesNotMutateSnapshot(t *testing.T) {
-	m := NewMap[uint64, string](identityUint64Hasher{})
+	m := NewWithHasher[uint64, string](identityUint64Hasher{})
 	m = m.Set(0, "zero")
 
 	n := m.Set(32, "thirty-two")
@@ -71,7 +72,7 @@ func TestMapSetEntryToBranchDoesNotMutateSnapshot(t *testing.T) {
 }
 
 func TestMapDelete(t *testing.T) {
-	m := NewMap[int, string](IntHasher{})
+	m := NewWithHasher[int, string](testIntHasher{})
 	m = m.Set(1, "one")
 	m = m.Set(2, "two")
 	m = m.Set(3, "three")
@@ -87,7 +88,7 @@ func TestMapDelete(t *testing.T) {
 }
 
 func TestMapDeleteMissingReturnsEquivalentMap(t *testing.T) {
-	m := NewMap[int, string](IntHasher{}).Set(1, "one")
+	m := NewWithHasher[int, string](testIntHasher{}).Set(1, "one")
 	n := m.Delete(2)
 
 	assertLen(t, n, 1)
@@ -96,7 +97,7 @@ func TestMapDeleteMissingReturnsEquivalentMap(t *testing.T) {
 }
 
 func TestMapDeleteMissingSameFragmentReturnsEquivalentMap(t *testing.T) {
-	m := NewMap[uint64, string](identityUint64Hasher{}).Set(0, "zero")
+	m := NewWithHasher[uint64, string](identityUint64Hasher{}).Set(0, "zero")
 	n := m.Delete(32)
 
 	assertLen(t, n, 1)
@@ -105,7 +106,7 @@ func TestMapDeleteMissingSameFragmentReturnsEquivalentMap(t *testing.T) {
 }
 
 func TestMapSnapshotsAreImmutable(t *testing.T) {
-	m0 := NewMap[int, string](IntHasher{})
+	m0 := NewWithHasher[int, string](testIntHasher{})
 	m1 := m0.Set(1, "one")
 	m2 := m1.Set(1, "uno")
 	m3 := m2.Delete(1)
@@ -121,7 +122,7 @@ func TestMapSnapshotsAreImmutable(t *testing.T) {
 }
 
 func TestMapDeleteFromBranchDoesNotMutateSnapshot(t *testing.T) {
-	m := NewMap[uint64, string](identityUint64Hasher{})
+	m := NewWithHasher[uint64, string](identityUint64Hasher{})
 	m = m.Set(0, "zero")
 	m = m.Set(32, "thirty-two")
 	m = m.Set(64, "sixty-four")
@@ -139,7 +140,7 @@ func TestMapDeleteFromBranchDoesNotMutateSnapshot(t *testing.T) {
 }
 
 func TestMapSetInBranchDoesNotMutateSnapshot(t *testing.T) {
-	m := NewMap[uint64, string](identityUint64Hasher{})
+	m := NewWithHasher[uint64, string](identityUint64Hasher{})
 	m = m.Set(0, "zero")
 	m = m.Set(32, "thirty-two")
 	m = m.Set(64, "sixty-four")
@@ -157,7 +158,7 @@ func TestMapSetInBranchDoesNotMutateSnapshot(t *testing.T) {
 }
 
 func TestMapForcedHashCollisions(t *testing.T) {
-	m := NewMap[int, string](constantIntHasher{})
+	m := NewWithHasher[int, string](constantIntHasher{})
 	for i := 0; i < 20; i++ {
 		m = m.Set(i, fmt.Sprintf("value-%d", i))
 	}
@@ -177,7 +178,7 @@ func TestMapForcedHashCollisions(t *testing.T) {
 }
 
 func TestMapCollisionGetHashMismatch(t *testing.T) {
-	m := NewMap[int, string](splitCollisionHasher{})
+	m := NewWithHasher[int, string](splitCollisionHasher{})
 	m = m.Set(1, "one")
 	m = m.Set(2, "two")
 
@@ -186,7 +187,7 @@ func TestMapCollisionGetHashMismatch(t *testing.T) {
 }
 
 func TestMapCollisionDeleteMissingReturnsEquivalentMap(t *testing.T) {
-	m := NewMap[int, string](constantIntHasher{})
+	m := NewWithHasher[int, string](constantIntHasher{})
 	m = m.Set(1, "one")
 	m = m.Set(2, "two")
 	n := m.Delete(3)
@@ -198,7 +199,7 @@ func TestMapCollisionDeleteMissingReturnsEquivalentMap(t *testing.T) {
 }
 
 func TestMapCollisionDeleteHashMismatchReturnsEquivalentMap(t *testing.T) {
-	m := NewMap[int, string](splitCollisionHasher{})
+	m := NewWithHasher[int, string](splitCollisionHasher{})
 	m = m.Set(1, "one")
 	m = m.Set(2, "two")
 	n := m.Delete(3)
@@ -210,7 +211,7 @@ func TestMapCollisionDeleteHashMismatchReturnsEquivalentMap(t *testing.T) {
 }
 
 func TestMapCollisionInsertDoesNotMutateSnapshot(t *testing.T) {
-	m := NewMap[int, string](constantIntHasher{})
+	m := NewWithHasher[int, string](constantIntHasher{})
 	m = m.Set(1, "one")
 	m = m.Set(2, "two")
 
@@ -229,7 +230,7 @@ func TestMapCollisionInsertDoesNotMutateSnapshot(t *testing.T) {
 }
 
 func TestMapCollisionInsertFromBuilderDoesNotAliasSiblings(t *testing.T) {
-	b := NewBuilder[int, string](constantIntHasher{})
+	b := NewBuilderWithHasher[int, string](constantIntHasher{})
 	b.Set(1, "one")
 	b.Set(2, "two")
 	b.Set(3, "three")
@@ -253,7 +254,7 @@ func TestMapCollisionInsertFromBuilderDoesNotAliasSiblings(t *testing.T) {
 }
 
 func TestMapCollisionOverwriteDoesNotMutateSnapshot(t *testing.T) {
-	m := NewMap[int, string](constantIntHasher{})
+	m := NewWithHasher[int, string](constantIntHasher{})
 	m = m.Set(1, "one")
 	m = m.Set(2, "two")
 	m = m.Set(3, "three")
@@ -269,7 +270,7 @@ func TestMapCollisionOverwriteDoesNotMutateSnapshot(t *testing.T) {
 }
 
 func TestMapCollisionDeleteDoesNotMutateSnapshot(t *testing.T) {
-	m := NewMap[int, string](constantIntHasher{})
+	m := NewWithHasher[int, string](constantIntHasher{})
 	m = m.Set(1, "one")
 	m = m.Set(2, "two")
 	m = m.Set(3, "three")
@@ -287,7 +288,7 @@ func TestMapCollisionDeleteDoesNotMutateSnapshot(t *testing.T) {
 }
 
 func TestMapCollisionExpansionPreservesExistingHashes(t *testing.T) {
-	m := NewMap[int, string](splitCollisionHasher{})
+	m := NewWithHasher[int, string](splitCollisionHasher{})
 	m = m.Set(1, "one")
 	m = m.Set(2, "two")
 	m = m.Set(3, "three")
@@ -300,7 +301,7 @@ func TestMapCollisionExpansionPreservesExistingHashes(t *testing.T) {
 }
 
 func TestMapCollisionExpansionDoesNotMutateSnapshot(t *testing.T) {
-	m := NewMap[int, string](splitCollisionHasher{})
+	m := NewWithHasher[int, string](splitCollisionHasher{})
 	m = m.Set(1, "one")
 	m = m.Set(2, "two")
 
@@ -319,7 +320,7 @@ func TestMapCollisionExpansionDoesNotMutateSnapshot(t *testing.T) {
 }
 
 func TestMapCollisionExpansionDeepDivergence(t *testing.T) {
-	m := NewMap[int, string](splitCollisionHasher{})
+	m := NewWithHasher[int, string](splitCollisionHasher{})
 	m = m.Set(1, "one")
 	m = m.Set(2, "two")
 
@@ -336,7 +337,7 @@ func TestMapCollisionExpansionDeepDivergence(t *testing.T) {
 }
 
 func TestMapDeleteCanonicalizesSingletonCollision(t *testing.T) {
-	m := NewMap[int, string](constantIntHasher{})
+	m := NewWithHasher[int, string](constantIntHasher{})
 	m = m.Set(1, "one")
 	m = m.Set(2, "two")
 
@@ -371,7 +372,7 @@ func TestDeleteUndersizedCollisionChildPanics(t *testing.T) {
 }
 
 func TestMapRange(t *testing.T) {
-	m := NewMap[int, string](IntHasher{})
+	m := NewWithHasher[int, string](testIntHasher{})
 	want := map[int]string{}
 	for i := 0; i < 64; i++ {
 		m = m.Set(i, fmt.Sprintf("value-%d", i))
@@ -395,7 +396,7 @@ func TestMapRange(t *testing.T) {
 }
 
 func TestMapRangeStops(t *testing.T) {
-	m := NewMap[int, int](IntHasher{})
+	m := NewWithHasher[int, int](testIntHasher{})
 	for i := 0; i < 10; i++ {
 		m = m.Set(i, i)
 	}
@@ -411,7 +412,7 @@ func TestMapRangeStops(t *testing.T) {
 }
 
 func TestMapRangeForcedHashCollisions(t *testing.T) {
-	m := NewMap[int, string](constantIntHasher{})
+	m := NewWithHasher[int, string](constantIntHasher{})
 	want := map[int]string{}
 	for i := 0; i < 8; i++ {
 		value := fmt.Sprintf("value-%d", i)
@@ -445,7 +446,7 @@ func TestMapRangeForcedHashCollisions(t *testing.T) {
 }
 
 func TestMapRangeStopsInCollision(t *testing.T) {
-	m := NewMap[int, int](constantIntHasher{})
+	m := NewWithHasher[int, int](constantIntHasher{})
 	for i := 0; i < 4; i++ {
 		m = m.Set(i, i)
 	}
@@ -462,7 +463,7 @@ func TestMapRangeStopsInCollision(t *testing.T) {
 }
 
 func TestMapConcurrentReaders(t *testing.T) {
-	m := NewMap[int, int](collisionProneHasher{})
+	m := NewWithHasher[int, int](collisionProneHasher{})
 	for i := 0; i < 200; i++ {
 		m = m.Set(i, i)
 	}
@@ -498,7 +499,7 @@ func TestMapIterationDeterministicForSameHistory(t *testing.T) {
 	// Seeding a same-bucket pair first forms a shallow collision node, so the
 	// next different-bucket insert pushes it down a branch chain.
 	buildMap := func() Map[int, int] {
-		m := NewMap[int, int](collisionProneHasher{})
+		m := NewWithHasher[int, int](collisionProneHasher{})
 		m = m.Set(0, 0)
 		m = m.Set(7, 7)
 		for i := 0; i < 60; i++ {
@@ -510,7 +511,7 @@ func TestMapIterationDeterministicForSameHistory(t *testing.T) {
 		return m
 	}
 	buildBuilder := func() Map[int, int] {
-		b := NewBuilder[int, int](collisionProneHasher{})
+		b := NewBuilderWithHasher[int, int](collisionProneHasher{})
 		b.Set(0, 0)
 		b.Set(7, 7)
 		for i := 0; i < 60; i++ {
@@ -547,8 +548,59 @@ func assertSameOrder[K comparable](t *testing.T, a, b []K) {
 	}
 }
 
+func TestNewUsesLanguageEquality(t *testing.T) {
+	type point struct{ x, y int }
+	m := New[point, string]()
+	m = m.Set(point{1, 2}, "a")
+	m = m.Set(point{1, 2}, "b")
+	m = m.Set(point{2, 1}, "c")
+
+	assertLen(t, m, 2)
+	assertGet(t, m, point{1, 2}, "b")
+	assertGet(t, m, point{2, 1}, "c")
+	n := m.Delete(point{1, 2})
+	assertLen(t, n, 1)
+	assertMissing[point, string](t, n, point{1, 2})
+	validateMap(t, m)
+	validateMap(t, n)
+}
+
+func TestNewNaNKeysAreInsertOnly(t *testing.T) {
+	// NaN keys mirror the builtin map anomaly: never == to anything, so they
+	// can be inserted and iterated but not looked up or deleted. The stored
+	// hash is frozen at Set time, so the map stays structurally sound; the
+	// validator is skipped because rehashing a NaN key cannot reproduce it.
+	nan := math.NaN()
+	m := New[float64, string]()
+	m = m.Set(nan, "a")
+	m = m.Set(nan, "b")
+
+	assertLen(t, m, 2)
+	assertMissing[float64, string](t, m, nan)
+	n := m.Delete(nan)
+	assertLen(t, n, 2)
+
+	visits := 0
+	m.Range(func(float64, string) bool {
+		visits++
+		return true
+	})
+	if visits != 2 {
+		t.Fatalf("range visits = %d, want 2", visits)
+	}
+}
+
+func TestNewNonComparableDynamicKeyPanics(t *testing.T) {
+	m := New[any, int]()
+	assertPanics(t, func() { m.Set([]int{1}, 1) })
+}
+
 func TestMapQuickAgainstBuiltin(t *testing.T) {
-	quickCheckMap(t, IntHasher{})
+	quickCheckMap(t, testIntHasher{})
+}
+
+func TestMapQuickAgainstBuiltinDefaultHasher(t *testing.T) {
+	quickCheckMap(t, defaultHasher[int]{})
 }
 
 func TestMapQuickAgainstBuiltinCollisionProne(t *testing.T) {
@@ -558,7 +610,7 @@ func TestMapQuickAgainstBuiltinCollisionProne(t *testing.T) {
 func quickCheckMap(t *testing.T, hasher Hasher[int]) {
 	t.Helper()
 	prop := func(ops []uint64) bool {
-		m := NewMap[int, int](hasher)
+		m := NewWithHasher[int, int](hasher)
 		want := map[int]int{}
 
 		for _, op := range ops {
@@ -595,7 +647,7 @@ func quickCheckMap(t *testing.T, hasher Hasher[int]) {
 
 func TestNilHasherPanicsOnSet(t *testing.T) {
 	assertPanics(t, func() {
-		_ = NewMap[int, int](nil).Set(1, 1)
+		_ = NewWithHasher[int, int](nil).Set(1, 1)
 	})
 }
 

@@ -2,17 +2,34 @@ package hamt
 
 import "testing"
 
-func TestUint64Hasher(t *testing.T) {
-	h := Uint64Hasher{}
-	if h.Hash(1) != h.Hash(1) {
-		t.Fatal("Hash(1) is not stable")
+func TestDefaultHasherLanguageEquality(t *testing.T) {
+	h := defaultHasher[string]{}
+	first := h.Hash("jane")
+	second := h.Hash("jane")
+	if first != second {
+		t.Fatal("Hash is not stable within the process")
 	}
-	if !h.Equal(1, 1) {
-		t.Fatal("Equal(1, 1) = false, want true")
+	if !h.Equal("jane", "jane") {
+		t.Fatal(`Equal("jane", "jane") = false, want true`)
 	}
-	if h.Equal(1, 2) {
-		t.Fatal("Equal(1, 2) = true, want false")
+	if h.Equal("jane", "susy") {
+		t.Fatal(`Equal("jane", "susy") = true, want false`)
 	}
+}
+
+// testIntHasher is a deterministic, well-distributed hasher so test
+// failures reproduce across runs, unlike the process-seeded default.
+type testIntHasher struct{}
+
+func (testIntHasher) Hash(v int) uint64   { return mix64(uint64(v)) }
+func (testIntHasher) Equal(a, b int) bool { return a == b }
+
+// mix64 is the splitmix64 finalizer.
+func mix64(v uint64) uint64 {
+	v += 0x9e3779b97f4a7c15
+	v = (v ^ (v >> 30)) * 0xbf58476d1ce4e5b9
+	v = (v ^ (v >> 27)) * 0x94d049bb133111eb
+	return v ^ (v >> 31)
 }
 
 type constantIntHasher struct{}

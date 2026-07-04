@@ -14,8 +14,17 @@ type Map[K, V any] struct {
 	hasher Hasher[K]
 }
 
-// NewMap returns an empty immutable map.
-func NewMap[K, V any](hasher Hasher[K]) Map[K, V] {
+// New returns an empty immutable map keyed by language equality: keys are
+// compared with == and hashed by a function seeded once per process. Use
+// NewWithHasher to define a custom key identity or to key by a
+// non-comparable type.
+func New[K comparable, V any]() Map[K, V] {
+	return Map[K, V]{hasher: defaultHasher[K]{}}
+}
+
+// NewWithHasher returns an empty immutable map whose key identity is
+// defined by hasher.
+func NewWithHasher[K, V any](hasher Hasher[K]) Map[K, V] {
 	return Map[K, V]{hasher: hasher}
 }
 

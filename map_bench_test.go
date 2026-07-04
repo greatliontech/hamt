@@ -229,7 +229,7 @@ func buildOurs(keys []benchKey) Map[benchKey, int] {
 }
 
 func buildOursWithHasher(keys []benchKey, hasher Hasher[benchKey]) Map[benchKey, int] {
-	m := NewMap[benchKey, int](hasher)
+	m := NewWithHasher[benchKey, int](hasher)
 	for _, key := range keys {
 		m = m.Set(key, int(key))
 	}
@@ -241,7 +241,7 @@ func buildOursBuilder(keys []benchKey) Map[benchKey, int] {
 }
 
 func buildOursBuilderWithHasher(keys []benchKey, hasher Hasher[benchKey]) Map[benchKey, int] {
-	b := NewBuilder[benchKey, int](hasher)
+	b := NewBuilderWithHasher[benchKey, int](hasher)
 	for _, key := range keys {
 		b.Set(key, int(key))
 	}
