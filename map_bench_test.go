@@ -2,6 +2,7 @@ package hamt
 
 import (
 	"fmt"
+	"runtime"
 	"testing"
 )
 
@@ -20,6 +21,23 @@ func BenchmarkMapGetHit(b *testing.B) {
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
 				v, ok := m.Get(keys[i%size])
+				benchValueSink = v
+				benchBoolSink = ok
+			}
+		})
+	}
+}
+
+func BenchmarkMapGetMiss(b *testing.B) {
+	for _, size := range benchSizes() {
+		keys := benchKeys(size + benchMissingKeys)
+		b.Run(fmt.Sprintf("%d", size), func(b *testing.B) {
+			m := buildOurs(keys[:size])
+			missing := keys[size:]
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				v, ok := m.Get(missing[i%len(missing)])
 				benchValueSink = v
 				benchBoolSink = ok
 			}
@@ -206,6 +224,122 @@ func benchmarkBuilderBuild(b *testing.B, sizes []int, hasher Hasher[benchKey]) {
 			}
 		})
 	}
+}
+
+// String-keyed benchmarks mirror the shape external persistent-map
+// comparisons tend to use: default hasher, string keys, a single Set into a
+// prebuilt map, a Get hit, and a full Builder rebuild, at small / medium /
+// large sizes.
+
+var benchStringMapSink Map[string, int]
+
+// benchMissingKeys is the pool of absent keys the insert and miss
+// benchmarks rotate through so the measurement samples many root-to-leaf
+// paths instead of one fixed, cache-hot path.
+const benchMissingKeys = 64
+
+func BenchmarkStringMapSetInsert(b *testing.B) {
+	for _, size := range stringBenchSizes() {
+		keys := stringBenchKeys(size + benchMissingKeys)
+		b.Run(fmt.Sprintf("%d", size), func(b *testing.B) {
+			m := buildStringMap(keys[:size])
+			missing := keys[size:]
+			b.ReportAllocs()
+			runtime.GC()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				benchStringMapSink = m.Set(missing[i%len(missing)], i)
+			}
+		})
+	}
+}
+
+func BenchmarkStringMapSetOverwrite(b *testing.B) {
+	for _, size := range stringBenchSizes() {
+		keys := stringBenchKeys(size)
+		b.Run(fmt.Sprintf("%d", size), func(b *testing.B) {
+			m := buildStringMap(keys)
+			b.ReportAllocs()
+			runtime.GC()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				benchStringMapSink = m.Set(keys[i%size], i)
+			}
+		})
+	}
+}
+
+func BenchmarkStringMapGetHit(b *testing.B) {
+	for _, size := range stringBenchSizes() {
+		keys := stringBenchKeys(size)
+		b.Run(fmt.Sprintf("%d", size), func(b *testing.B) {
+			m := buildStringMap(keys)
+			b.ReportAllocs()
+			runtime.GC()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				v, ok := m.Get(keys[i%size])
+				benchValueSink = v
+				benchBoolSink = ok
+			}
+		})
+	}
+}
+
+func BenchmarkStringMapGetMiss(b *testing.B) {
+	for _, size := range stringBenchSizes() {
+		keys := stringBenchKeys(size + benchMissingKeys)
+		b.Run(fmt.Sprintf("%d", size), func(b *testing.B) {
+			m := buildStringMap(keys[:size])
+			missing := keys[size:]
+			b.ReportAllocs()
+			runtime.GC()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				v, ok := m.Get(missing[i%len(missing)])
+				benchValueSink = v
+				benchBoolSink = ok
+			}
+		})
+	}
+}
+
+func BenchmarkStringMapBuilderBuild(b *testing.B) {
+	for _, size := range stringBenchSizes() {
+		keys := stringBenchKeys(size)
+		b.Run(fmt.Sprintf("%d", size), func(b *testing.B) {
+			b.ReportAllocs()
+			runtime.GC()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				builder := NewBuilder[string, int]()
+				for j, key := range keys {
+					builder.Set(key, j)
+				}
+				benchStringMapSink = builder.Map()
+			}
+		})
+	}
+}
+
+func stringBenchSizes() []int {
+	return []int{50, 1000, 100000}
+}
+
+func stringBenchKeys(n int) []string {
+	keys := make([]string, n)
+	for i := range keys {
+		keys[i] = fmt.Sprintf("key-%08d", i)
+	}
+	return keys
+}
+
+func buildStringMap(keys []string) Map[string, int] {
+	m := New[string, int]()
+	for i, key := range keys {
+		m = m.Set(key, i)
+	}
+	return m
 }
 
 func benchSizes() []int {

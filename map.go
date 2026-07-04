@@ -46,12 +46,13 @@ func (m Map[K, V]) Get(key K) (V, bool) {
 // Set returns a map with key associated with value.
 func (m Map[K, V]) Set(key K, value V) Map[K, V] {
 	m.mustHasher()
-	e := entry[K, V]{key: key, value: value, hash: m.hasher.Hash(key)}
+	hash := m.hasher.Hash(key)
+	e := entry[K, V]{key: key, value: value}
 	if m.root == nil {
-		return Map[K, V]{root: newSingleNode(e, 0), size: 1, hasher: m.hasher}
+		return Map[K, V]{root: newSingleNode(e, hash, 0), size: 1, hasher: m.hasher}
 	}
 
-	root, added := m.root.set(e, 0, m.hasher)
+	root, added := m.root.set(e, hash, 0, m.hasher)
 	if added {
 		return Map[K, V]{root: root, size: m.size + 1, hasher: m.hasher}
 	}
@@ -86,10 +87,12 @@ func (m Map[K, V]) mustHasher() {
 	}
 }
 
+// entry deliberately does not store the key's hash: entries-slice copies
+// dominate Set's allocation profile, and the hash is recomputable from the
+// key when a slot conflict forces a split.
 type entry[K, V any] struct {
 	key   K
 	value V
-	hash  uint64
 }
 
 type collisionEntry[K, V any] struct {
@@ -116,8 +119,8 @@ type collisionNode[K, V any] struct {
 	entries []collisionEntry[K, V]
 }
 
-func newSingleNode[K, V any](e entry[K, V], shift uint) *node[K, V] {
-	bit := bitpos(fragment(e.hash, shift))
+func newSingleNode[K, V any](e entry[K, V], hash uint64, shift uint) *node[K, V] {
+	bit := bitpos(fragment(hash, shift))
 	return &node[K, V]{dataMap: bit, entries: []entry[K, V]{e}}
 }
 
@@ -151,7 +154,7 @@ func (n *node[K, V]) get(key K, hash uint64, shift uint, h Hasher[K]) (V, bool) 
 		bit := bitpos(fragment(hash, shift))
 		if n.dataMap&bit != 0 {
 			e := n.entries[index(n.dataMap, bit)]
-			if e.hash == hash && h.Equal(e.key, key) {
+			if h.Equal(e.key, key) {
 				return e.value, true
 			}
 			return zero, false
@@ -164,35 +167,35 @@ func (n *node[K, V]) get(key K, hash uint64, shift uint, h Hasher[K]) (V, bool) 
 	}
 }
 
-func (n *node[K, V]) set(e entry[K, V], shift uint, h Hasher[K]) (*node[K, V], bool) {
+func (n *node[K, V]) set(e entry[K, V], hash uint64, shift uint, h Hasher[K]) (*node[K, V], bool) {
 	if n.isCollision() {
-		return n.setCollision(e, shift, h)
+		return n.setCollision(e, hash, shift, h)
 	}
 
-	bit := bitpos(fragment(e.hash, shift))
+	bit := bitpos(fragment(hash, shift))
 	if n.dataMap&bit != 0 {
 		idx := index(n.dataMap, bit)
 		old := n.entries[idx]
-		if old.hash == e.hash && h.Equal(old.key, e.key) {
+		if h.Equal(old.key, e.key) {
 			return n.cloneWithEntry(idx, e), false
 		}
 
-		child := mergeEntries(old, e, shift+fragmentBits)
+		child := mergeEntries(old, rehashForSplit(old, hash, shift+fragmentBits, h), e, hash, shift+fragmentBits)
 		return n.cloneWithEntryReplacedByChild(bit, idx, child), true
 	}
 
 	if n.nodeMap&bit != 0 {
 		idx := index(n.nodeMap, bit)
-		child, added := n.children[idx].set(e, shift+fragmentBits, h)
+		child, added := n.children[idx].set(e, hash, shift+fragmentBits, h)
 		return n.cloneWithChild(idx, child), added
 	}
 
 	return n.cloneWithInsertedEntry(bit, e), true
 }
 
-func (n *node[K, V]) setCollision(e entry[K, V], shift uint, h Hasher[K]) (*node[K, V], bool) {
-	if e.hash != n.collision.hash {
-		return pushCollision(n, e, shift), true
+func (n *node[K, V]) setCollision(e entry[K, V], hash uint64, shift uint, h Hasher[K]) (*node[K, V], bool) {
+	if hash != n.collision.hash {
+		return pushCollision(n, e, hash, shift), true
 	}
 
 	for i, old := range n.collision.entries {
@@ -210,9 +213,9 @@ func (n *node[K, V]) setCollision(e entry[K, V], shift uint, h Hasher[K]) (*node
 // on, and e lands where they diverge. The hashes differ in some bit below
 // 64, so a diverging fragment exists at shift <= 60 and the recursion
 // terminates.
-func pushCollision[K, V any](collision *node[K, V], e entry[K, V], shift uint) *node[K, V] {
+func pushCollision[K, V any](collision *node[K, V], e entry[K, V], hash uint64, shift uint) *node[K, V] {
 	collisionBit := bitpos(fragment(collision.collision.hash, shift))
-	entryBit := bitpos(fragment(e.hash, shift))
+	entryBit := bitpos(fragment(hash, shift))
 	if collisionBit != entryBit {
 		return &node[K, V]{
 			dataMap:  entryBit,
@@ -221,7 +224,7 @@ func pushCollision[K, V any](collision *node[K, V], e entry[K, V], shift uint) *
 			children: []*node[K, V]{collision},
 		}
 	}
-	child := pushCollision(collision, e, shift+fragmentBits)
+	child := pushCollision(collision, e, hash, shift+fragmentBits)
 	return &node[K, V]{nodeMap: collisionBit, children: []*node[K, V]{child}}
 }
 
@@ -234,7 +237,7 @@ func (n *node[K, V]) delete(key K, hash uint64, shift uint, h Hasher[K]) (*node[
 	if n.dataMap&bit != 0 {
 		idx := index(n.dataMap, bit)
 		e := n.entries[idx]
-		if e.hash != hash || !h.Equal(e.key, key) {
+		if !h.Equal(e.key, key) {
 			return n, false
 		}
 		clone := n.cloneWithoutEntrySharedChildren(bit, idx)
@@ -319,7 +322,7 @@ func (n *node[K, V]) singleton() (entry[K, V], bool) {
 	if c := n.collision; c != nil {
 		if len(c.entries) == 1 {
 			e := c.entries[0]
-			return entry[K, V]{key: e.key, value: e.value, hash: c.hash}, true
+			return entry[K, V]{key: e.key, value: e.value}, true
 		}
 		return zero, false
 	}
@@ -397,16 +400,30 @@ func (n *node[K, V]) isEmpty() bool {
 	return n.collision == nil && n.dataMap == 0 && n.nodeMap == 0
 }
 
+// rehashForSplit recomputes the hash of a stored entry whose slot a new
+// entry landed on, forcing the bits below shift to match the incoming hash.
+// Those bits are the path both entries provably share, so for a stable
+// hasher the splice is a no-op. A key whose hash is unstable (a
+// NaN-containing key under the default hasher) may rehash to a value whose
+// only disagreement with the incoming hash lies below shift; passing that
+// raw value to mergeEntries would recurse past the last fragment without
+// ever diverging. The splice pins the shared bits so the hashes are either
+// identical (collision node) or diverge at a fragment >= shift.
+func rehashForSplit[K, V any](old entry[K, V], hash uint64, shift uint, h Hasher[K]) uint64 {
+	low := uint64(1)<<shift - 1
+	return h.Hash(old.key)&^low | hash&low
+}
+
 // mergeEntries builds the subtree holding two entries that share the path
 // down to shift. Equal hashes collide; unequal hashes diverge at some
 // fragment at shift <= 60, terminating the recursion.
-func mergeEntries[K, V any](a, b entry[K, V], shift uint) *node[K, V] {
-	if a.hash == b.hash {
-		return newCollisionNode(a.hash, []entry[K, V]{a, b})
+func mergeEntries[K, V any](a entry[K, V], aHash uint64, b entry[K, V], bHash uint64, shift uint) *node[K, V] {
+	if aHash == bHash {
+		return newCollisionNode(aHash, []entry[K, V]{a, b})
 	}
 
-	aBit := bitpos(fragment(a.hash, shift))
-	bBit := bitpos(fragment(b.hash, shift))
+	aBit := bitpos(fragment(aHash, shift))
+	bBit := bitpos(fragment(bHash, shift))
 	if aBit != bBit {
 		n := &node[K, V]{dataMap: aBit | bBit}
 		if aBit < bBit {
@@ -417,7 +434,7 @@ func mergeEntries[K, V any](a, b entry[K, V], shift uint) *node[K, V] {
 		return n
 	}
 
-	child := mergeEntries(a, b, shift+fragmentBits)
+	child := mergeEntries(a, aHash, b, bHash, shift+fragmentBits)
 	return &node[K, V]{nodeMap: aBit, children: []*node[K, V]{child}}
 }
 

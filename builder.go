@@ -45,15 +45,16 @@ func (b *Builder[K, V]) Get(key K) (V, bool) {
 func (b *Builder[K, V]) Set(key K, value V) {
 	state := b.mustState()
 	state.mustHasher()
-	e := entry[K, V]{key: key, value: value, hash: state.hasher.Hash(key)}
+	hash := state.hasher.Hash(key)
+	e := entry[K, V]{key: key, value: value}
 	if state.root == nil {
-		state.root = newSingleNode(e, 0)
+		state.root = newSingleNode(e, hash, 0)
 		state.size = 1
 		return
 	}
 
 	var added bool
-	state.root, added = state.root.setMutable(e, 0, state.hasher)
+	state.root, added = state.root.setMutable(e, hash, 0, state.hasher)
 	if added {
 		state.size++
 	}
@@ -105,21 +106,21 @@ func (s *builderState[K, V]) mustHasher() {
 // builder was created by that builder and Map() invalidates it before the
 // tree is published.
 
-func (n *node[K, V]) setMutable(e entry[K, V], shift uint, h Hasher[K]) (*node[K, V], bool) {
+func (n *node[K, V]) setMutable(e entry[K, V], hash uint64, shift uint, h Hasher[K]) (*node[K, V], bool) {
 	if n.isCollision() {
-		return n.setCollisionMutable(e, shift, h)
+		return n.setCollisionMutable(e, hash, shift, h)
 	}
 
-	bit := bitpos(fragment(e.hash, shift))
+	bit := bitpos(fragment(hash, shift))
 	if n.dataMap&bit != 0 {
 		idx := index(n.dataMap, bit)
 		old := n.entries[idx]
-		if old.hash == e.hash && h.Equal(old.key, e.key) {
+		if h.Equal(old.key, e.key) {
 			n.entries[idx] = e
 			return n, false
 		}
 
-		child := mergeEntries(old, e, shift+fragmentBits)
+		child := mergeEntries(old, rehashForSplit(old, hash, shift+fragmentBits, h), e, hash, shift+fragmentBits)
 		n.dataMap &^= bit
 		n.entries = removeEntryMutable(n.entries, idx)
 		childIdx := index(n.nodeMap, bit)
@@ -130,7 +131,7 @@ func (n *node[K, V]) setMutable(e entry[K, V], shift uint, h Hasher[K]) (*node[K
 
 	if n.nodeMap&bit != 0 {
 		idx := index(n.nodeMap, bit)
-		child, added := n.children[idx].setMutable(e, shift+fragmentBits, h)
+		child, added := n.children[idx].setMutable(e, hash, shift+fragmentBits, h)
 		n.children[idx] = child
 		return n, added
 	}
@@ -141,10 +142,10 @@ func (n *node[K, V]) setMutable(e entry[K, V], shift uint, h Hasher[K]) (*node[K
 	return n, true
 }
 
-func (n *node[K, V]) setCollisionMutable(e entry[K, V], shift uint, h Hasher[K]) (*node[K, V], bool) {
+func (n *node[K, V]) setCollisionMutable(e entry[K, V], hash uint64, shift uint, h Hasher[K]) (*node[K, V], bool) {
 	c := n.collision
-	if e.hash != c.hash {
-		return pushCollision(n, e, shift), true
+	if hash != c.hash {
+		return pushCollision(n, e, hash, shift), true
 	}
 
 	for i, old := range c.entries {
@@ -167,7 +168,7 @@ func (n *node[K, V]) deleteMutable(key K, hash uint64, shift uint, h Hasher[K]) 
 	if n.dataMap&bit != 0 {
 		idx := index(n.dataMap, bit)
 		e := n.entries[idx]
-		if e.hash != hash || !h.Equal(e.key, key) {
+		if !h.Equal(e.key, key) {
 			return n, false
 		}
 		n.dataMap &^= bit

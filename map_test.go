@@ -2,6 +2,7 @@ package hamt
 
 import (
 	"fmt"
+	"maps"
 	"math"
 	"math/bits"
 	"sync"
@@ -567,9 +568,11 @@ func TestNewUsesLanguageEquality(t *testing.T) {
 
 func TestNewNaNKeysAreInsertOnly(t *testing.T) {
 	// NaN keys mirror the builtin map anomaly: never == to anything, so they
-	// can be inserted and iterated but not looked up or deleted. The stored
-	// hash is frozen at Set time, so the map stays structurally sound; the
-	// validator is skipped because rehashing a NaN key cannot reproduce it.
+	// can be inserted and iterated but not looked up or deleted. A split
+	// re-places such an entry under a freshly computed hash spliced onto the
+	// shared path bits, so the map stays structurally sound for every other
+	// key; the validator is skipped because rehashing a NaN key cannot
+	// reproduce its placement.
 	nan := math.NaN()
 	m := New[float64, string]()
 	m = m.Set(nan, "a")
@@ -588,6 +591,48 @@ func TestNewNaNKeysAreInsertOnly(t *testing.T) {
 	if visits != 2 {
 		t.Fatalf("range visits = %d, want 2", visits)
 	}
+}
+
+// unstableIntHasher deterministically reproduces the default hasher's NaN
+// anomaly: key 0 is never equal to anything, itself included, and hashes
+// differently on every call, with the variation confined to bits below the
+// first diverging fragment. Every other key hashes to 0.
+type unstableIntHasher struct{ calls uint64 }
+
+func (h *unstableIntHasher) Hash(v int) uint64 {
+	if v != 0 {
+		return 0
+	}
+	h.calls++
+	return h.calls - 1
+}
+
+func (h *unstableIntHasher) Equal(a, b int) bool { return a != 0 && b != 0 && a == b }
+
+func TestMapSetSplitOfUnstableHashKeyTerminates(t *testing.T) {
+	// A stored key may rehash at split time to a value that disagrees with
+	// the incoming hash only below the level where the split happens; the
+	// split must still terminate and keep both entries reachable by
+	// structure. The validator is skipped for the same reason as
+	// TestNewNaNKeysAreInsertOnly.
+	m := NewWithHasher[int, string](&unstableIntHasher{})
+	m = m.Set(0, "unstable")
+	m = m.Set(1, "stable")
+
+	assertLen(t, m, 2)
+	assertGet(t, m, 1, "stable")
+	assertRangeVisits(t, m, 2)
+}
+
+func TestBuilderSetSplitOfUnstableHashKeyTerminates(t *testing.T) {
+	b := NewBuilderWithHasher[int, string](&unstableIntHasher{})
+	b.Set(0, "unstable")
+	b.Set(1, "stable")
+	m := b.Map()
+
+	assertLen(t, m, 2)
+	assertGet(t, m, 1, "stable")
+	assertRangeVisits(t, m, 2)
 }
 
 func TestNewNonComparableDynamicKeyPanics(t *testing.T) {
@@ -645,10 +690,101 @@ func quickCheckMap(t *testing.T, hasher Hasher[int]) {
 	}
 }
 
+func TestMapQuickDerivedMutationsDoNotChangeSource(t *testing.T) {
+	quickCheckSnapshotUnchanged(t, testIntHasher{})
+}
+
+func TestMapQuickDerivedMutationsDoNotChangeSourceDefaultHasher(t *testing.T) {
+	quickCheckSnapshotUnchanged(t, defaultHasher[int]{})
+}
+
+func TestMapQuickDerivedMutationsDoNotChangeSourceCollisionProne(t *testing.T) {
+	quickCheckSnapshotUnchanged(t, collisionProneHasher{})
+}
+
+// quickCheckSnapshotUnchanged pins the structural-sharing contract: maps
+// returned by Set and Delete share structure, and no later derived mutation
+// may change the reachable contents or internal structure of any previously
+// returned map — neither the seed snapshot nor any intermediate derivation.
+func quickCheckSnapshotUnchanged(t *testing.T, hasher Hasher[int]) {
+	t.Helper()
+	type snapshot struct {
+		m    Map[int, int]
+		want map[int]int
+	}
+	prop := func(seedOps, deriveOps []uint64) bool {
+		src := NewWithHasher[int, int](hasher)
+		want := map[int]int{}
+		for _, op := range seedOps {
+			key := int((op >> 2) % 97)
+			value := int(op >> 9)
+			if op&3 == 3 {
+				src = src.Delete(key)
+				delete(want, key)
+			} else {
+				src = src.Set(key, value)
+				want[key] = value
+			}
+		}
+
+		// Derive maps from the snapshot and from earlier derivations; after
+		// each derivation every previously returned map must be unchanged.
+		snapshots := []snapshot{{m: src, want: maps.Clone(want)}}
+		for _, op := range deriveOps {
+			key := int((op >> 2) % 97)
+			value := int(op >> 9)
+			base := snapshots[len(snapshots)-1]
+			if op&1 == 0 {
+				base = snapshots[0]
+			}
+			derivedWant := maps.Clone(base.want)
+			if derivedWant == nil {
+				derivedWant = map[int]int{}
+			}
+			var derived Map[int, int]
+			if op&2 == 0 {
+				derived = base.m.Set(key, value)
+				derivedWant[key] = value
+			} else {
+				derived = base.m.Delete(key)
+				delete(derivedWant, key)
+			}
+			snapshots = append(snapshots, snapshot{m: derived, want: derivedWant})
+			for _, s := range snapshots {
+				if !mapsEqual(s.m, s.want) {
+					t.Logf("snapshot contents changed")
+					return false
+				}
+				if err := checkMap(s.m); err != nil {
+					t.Logf("snapshot structure invalid: %v", err)
+					return false
+				}
+			}
+		}
+		return true
+	}
+
+	if err := quick.Check(prop, &quick.Config{MaxCount: 200}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestNilHasherPanicsOnSet(t *testing.T) {
 	assertPanics(t, func() {
 		_ = NewWithHasher[int, int](nil).Set(1, 1)
 	})
+}
+
+func assertRangeVisits[K, V any](t *testing.T, m Map[K, V], want int) {
+	t.Helper()
+	visits := 0
+	m.Range(func(K, V) bool {
+		visits++
+		return true
+	})
+	if visits != want {
+		t.Fatalf("range visits = %d, want %d", visits, want)
+	}
 }
 
 func assertLen[K, V any](t *testing.T, m Map[K, V], want int) {
@@ -788,14 +924,12 @@ func checkNode[K comparable, V comparable](n *node[K, V], shift uint, prefix uin
 		}
 		e := n.entries[entryIdx]
 		entryIdx++
-		if bitpos(fragment(e.hash, shift)) != bit {
+		hash := h.Hash(e.key)
+		if bitpos(fragment(hash, shift)) != bit {
 			return 0, fmt.Errorf("entry stored under wrong fragment")
 		}
-		if e.hash&prefixMask != prefix {
+		if hash&prefixMask != prefix {
 			return 0, fmt.Errorf("entry stored under wrong path")
-		}
-		if h.Hash(e.key) != e.hash {
-			return 0, fmt.Errorf("stored hash mismatch")
 		}
 		count++
 	}
