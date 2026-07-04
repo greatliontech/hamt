@@ -1,3 +1,3 @@
-module github.com/thegrumpylion/hamt
+module github.com/greatliontech/hamt
 
 go 1.26.4

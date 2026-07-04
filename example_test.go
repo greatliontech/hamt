@@ -5,7 +5,7 @@ import (
 	"hash/maphash"
 	"strings"
 
-	"github.com/thegrumpylion/hamt"
+	"github.com/greatliontech/hamt"
 )
 
 func ExampleMap() {
