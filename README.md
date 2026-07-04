@@ -22,8 +22,8 @@ n := m.Delete("jane")
 fmt.Println(n.Len(), m.Len()) // 0 1
 
 m.Range(func(k string, v int) bool {
-	fmt.Println(k, v)
-	return true
+ fmt.Println(k, v)
+ return true
 })
 ```
 
@@ -39,7 +39,7 @@ equivalence relation, equal keys must hash equally, and hashes must be stable
 while a key is stored.
 
 For bulk construction, use a builder. It mutates private state, so building
-avoids the per-operation copying of the persistent path; `Map` returns the
+avoids the per-operation copying of the persistent path. `Map` returns the
 built immutable map and invalidates the builder. `NewBuilder` and
 `NewBuilderWithHasher` mirror the map constructors:
 
