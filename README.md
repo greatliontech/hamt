@@ -7,6 +7,14 @@ remain valid snapshots that may share structure. A published map is safe for
 concurrent readers as long as callers do not mutate data reachable through
 keys or values.
 
+## Installation
+
+```bash
+go get github.com/greatliontech/hamt
+```
+
+## Usage
+
 `New` keys the map by language equality: the key type must be `comparable`,
 keys are compared with `==`, and hashes come from a hash function seeded once
 per process.
@@ -49,5 +57,3 @@ b.Set("jane", 100)
 b.Set("susy", 200)
 m := b.Map()
 ```
-
-See `docs/spec.md` for the authoritative behavior contract.
